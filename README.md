@@ -81,16 +81,20 @@ You only have to do this once. Next time it opens normally.
 
 <p align="center"><img src="docs/img/installer-select.png" width="460" alt="Select your game window"></p>
 
-**4. Wait.** A green bar shows the progress. This takes about 3 minutes on a fast Mac and up to 25
+**4. Choose what to install.** Leave **Intro movies** ticked: Setup then downloads a small free tool
+(ffmpeg, 28 MB) so the game can play its logo and intro movies. The page also checks your Mac: if
+Apple's **Command Line Tools** are missing, click **Install…** and follow Apple's window (about 10 minutes,
+no Apple ID needed); the page notices by itself when they are ready. Then click **Install**.
+
+<p align="center"><img src="docs/img/installer-components.png" width="460" alt="Select components window"></p>
+
+**5. Wait.** A green bar shows the progress. This takes about 3 minutes on a fast Mac and up to 25
 minutes on an older one. **Keep the window open and do not close the lid.** You can tick **Show details**
 if you are curious.
 
 <p align="center"><img src="docs/img/installer-install.png" width="460" alt="Installing window"></p>
 
-If a message asks you to install **Command Line Tools** (a free tool from Apple), click **Install**,
-wait until it is done, and then click **Try Again** in the installer window.
-
-**5. Done.** When you see **Completing the Might and Magic IX Native Setup Wizard**, click **Finish**.
+**6. Done.** When you see **Completing the Might and Magic IX Native Setup Wizard**, click **Finish**.
 The game starts if the box **Launch MM9 Native** is ticked.
 
 <p align="center"><img src="docs/img/installer-done.png" width="460" alt="Finished window"></p>
@@ -107,9 +111,9 @@ in Finder click **Go** in the top menu → **Home**, then open the **Application
 your Dock to start it quickly next time.
 
 - **Ctrl + Cmd + F:** full screen on and off. **Cmd + Esc:** frees the mouse. **Cmd + Q:** quit.
-- **Intro movies:** these need a free tool called ffmpeg. Without it the game still works and just
-  skips the movies. (To add it: install [Homebrew](https://brew.sh), then type `brew install ffmpeg`
-  in the Terminal app.)
+- **Intro movies:** if you left **Intro movies** ticked in Setup, they play. If not, the game still works
+  and just skips them. (To add them later, run Setup again with the box ticked, or install
+  [Homebrew](https://brew.sh) and type `brew install ffmpeg` in the Terminal app.)
 - **Your saves** are in `~/Library/Application Support/MM9 Native/game/SaveGames`.
 
 > **Do not share the finished game with anyone.** It contains the game's own code, which belongs to its

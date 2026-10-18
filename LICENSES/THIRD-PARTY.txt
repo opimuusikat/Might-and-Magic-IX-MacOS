@@ -13,9 +13,13 @@ Downloaded by the builder on your Mac (not included; each checked against a fixe
 - Unicorn 2.1.4 (the PyPI wheel's static library), GPLv2. Linked into the app the builder makes on
   your Mac, as the fallback interpreter for code the analysis missed. That app is never shared.
 
-Optional, installed by you
-- FFmpeg (for example: brew install ffmpeg). The app runs the ffmpeg command-line tool to play the
-  game's Bink movies; nothing from FFmpeg is linked into the app.
+Optional movie support
+- FFmpeg (https://ffmpeg.org, GPL build). The app runs the ffmpeg command-line tool as a separate program to
+  play the game's Bink movies; nothing from FFmpeg is linked into the app. If you tick "Intro movies" in the
+  installer (MM9N_FFMPEG_DOWNLOAD=1), the builder downloads a static Apple Silicon build, ffmpeg 9.0.2 from
+  Martin Riedl's build server (https://ffmpeg.martin-riedl.de, build scripts are open source there), checks
+  it against a fixed SHA-256 and keeps it in ~/Library/Application Support/MM9 Native/tools. Or install it
+  yourself (brew install ffmpeg); the game finds it there too.
 
 - innoextract 1.9 (Daniel Scharrer, https://constexpr.org/innoextract/), zlib licence; see
   innoextract-LICENSE.txt. The installer app (dev/make_installer.sh) bundles a static arm64 build of it

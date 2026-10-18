@@ -25,6 +25,7 @@
 #   MM9N_KEEP_WORK=1  keep the 1 GB of intermediate files after a successful build
 #   MM9N_JOBS, MM9N_GHIDRA_JOBS, MM9N_GHIDRA_MAXMEM   parallelism and Ghidra's Java heap
 #   MM9N_SKIP_SMOKETEST=1  do not start the game once at the end
+#   MM9N_FFMPEG_DOWNLOAD=1  also download ffmpeg (28 MB, SHA-256 checked) so the intro movies play
 #
 # MIT licence (see LICENSES/). Parts are derived from Fallout-NV-MacOS (MIT, (c) 2026 thetheoryofR).
 
@@ -323,6 +324,23 @@ export GH JAVA_HOME WORK LOGDIR SRC GHIDRA_USER
 export PATH="$JAVA_HOME/bin:$PATH"
 export GHIDRA_HEADLESS_MAXMEM="$GH_HEAP"
 "$JAVA_HOME/bin/java" -version >> "$LOG" 2>&1 || fail "The Java runtime does not start."
+if [ "${MM9N_FFMPEG_DOWNLOAD:-0}" = 1 ]; then   # optional: movie support
+  FF="$SUPPORT/tools/ffmpeg"
+  if [ -x "$FF" ] && [ "$(cat "$FF.zip.sha" 2>/dev/null)" = "$FFMPEG_SHA" ]; then say "ffmpeg: already here"
+  else
+    say "ffmpeg: downloading $FFMPEG_URL"
+    mkdir -p "$SUPPORT/tools" "$CACHE/downloads"
+    FFZ="$CACHE/downloads/ffmpeg.zip"
+    if /usr/bin/curl -fL --retry 2 --connect-timeout 30 -s -o "$FFZ" "$FFMPEG_URL" && [ "$(sha "$FFZ")" = "$FFMPEG_SHA" ] \
+       && rm -f "$FF" && /usr/bin/unzip -q -o "$FFZ" ffmpeg -d "$SUPPORT/tools" >> "$LOG" 2>&1 && chmod +x "$FF" \
+       && "$FF" -version >> "$LOG" 2>&1; then
+      echo "$FFMPEG_SHA" > "$FF.zip.sha"; say "ffmpeg: ready in $SUPPORT/tools"
+    else
+      rm -f "$FF"; say "note: ffmpeg could not be downloaded; the game works without it and skips the movies (brew install ffmpeg adds them later)"
+    fi
+    rm -f "$FFZ"
+  fi
+fi
 done_step "in $CACHE ($(du -sh "$CACHE" 2>/dev/null | cut -f1))"
 
 # ---------------------------------------------------------------------------------------------
@@ -486,6 +504,7 @@ if grep -q '^rangebind' autoexec.cfg 2>/dev/null; then cp autoexec.cfg autoexec.
 elif [ -f autoexec.cfg.last-good ]; then cp autoexec.cfg.last-good autoexec.cfg; fi
 # Same as the Wine app: 800x600 (the menus only line up there; the window scales it), no auto-deactivate.
 [ -f autoexec.cfg ] && /usr/bin/sed -i '' -E 's/^"ScreenWidth" "[0-9.]+"/"ScreenWidth" "800"/; s/^"ScreenHeight" "[0-9.]+"/"ScreenHeight" "600"/; s/^"(AutoDeactivate|AutoDeactivation)" "[0-9.]+"/"\1" "0"/' autoexec.cfg
+[ -z "${M1_FFMPEG:-}" ] && [ -x "$SUPPORT/tools/ffmpeg" ] && export M1_FFMPEG="$SUPPORT/tools/ffmpeg"
 [ -z "${M1_FFMPEG:-}" ] && [ -x /opt/local/bin/ffmpeg ] && export M1_FFMPEG=/opt/local/bin/ffmpeg
 export M1_ICON="$APP/Contents/Resources/AppIcon.icns" M1_QUIET=${M1_QUIET:-1} M1_QUIET_SEC=1 M1_SECS=${M1_SECS:-100000}
 exec "$APP/Contents/MacOS/MM9NativeGame" "$APP/Contents/Resources/modules" "$@" > "$LOG" 2>&1

@@ -23,6 +23,7 @@ final class Installer: ObservableObject {
     @Published var chosen: String?
     @Published var gameFolderPresent = false
     @Published var appInstalled = false
+    @Published var movies = true      // also download ffmpeg so the intro movies play
     private var process: Process?
     private var activity: NSObjectProtocol?
     private var errorLines: [String] = []
@@ -58,6 +59,7 @@ final class Installer: ObservableObject {
         env["PATH"] = "/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:/usr/local/bin"
         env["MM9N_INNOEXTRACT"] = res.appendingPathComponent("builder/bin/innoextract").path
         env["MM9N_GAME"] = nil; env["MM9N_INSTALLER"] = nil
+        env["MM9N_FFMPEG_DOWNLOAD"] = movies ? "1" : "0"
         var isDir: ObjCBool = false
         if let p = path {
             if FileManager.default.fileExists(atPath: p, isDirectory: &isDir), isDir.boolValue { env["MM9N_GAME"] = p }
@@ -358,17 +360,34 @@ struct AppIconArt: View {
     }
 }
 
-enum Page { case welcome, license, select, install }
+/// Apple's Command Line Tools (clang) are installed.
+func commandLineToolsReady() -> Bool {
+    let p = Process(); p.executableURL = URL(fileURLWithPath: "/usr/bin/xcode-select"); p.arguments = ["-p"]
+    let out = Pipe(); p.standardOutput = out; p.standardError = Pipe()
+    guard (try? p.run()) != nil else { return false }
+    p.waitUntilExit()
+    guard p.terminationStatus == 0 else { return false }
+    let path = String(decoding: out.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+    return FileManager.default.fileExists(atPath: path + "/usr/bin/clang")
+}
+func freeDiskGB() -> Double {
+    let v = try? URL(fileURLWithPath: home).resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
+    return Double(v?.volumeAvailableCapacityForImportantUsage ?? 0) / 1_073_741_824
+}
+
+enum Page { case welcome, license, select, components, install }
 
 struct ContentView: View {
     @StateObject var inst = Installer()
     @State private var page: Page = {
-        switch ProcessInfo.processInfo.environment["MM9I_PAGE"] { case "license": return .license; case "select": return .select; case "install", "done", "failed": return .install; default: return .welcome }
+        switch ProcessInfo.processInfo.environment["MM9I_PAGE"] { case "license": return .license; case "select": return .select; case "components": return .components; case "install", "done", "failed": return .install; default: return .welcome }
     }()
     @State private var accepted = false
     @State private var useExisting = false
     @State private var path = ""
     @State private var launch = true
+    @State private var cltOK = commandLineToolsReady()
+    @State private var freeGB = freeDiskGB()
     @State private var targeted = false
     @State private var showDetails = false
     @State private var tick = Date()
@@ -384,6 +403,7 @@ struct ContentView: View {
                     case .welcome: welcome
                     case .license: wizardPage("License Agreement", "Please read the following notice before continuing.") { license }
                     case .select: wizardPage("Select Game Source", "Where is your copy of Might and Magic IX?") { select }
+                    case .components: wizardPage("Select Components", "Choose what Setup should install on your Mac.") { components }
                     case .install: installPage
                     }
                     Etched()
@@ -396,7 +416,7 @@ struct ContentView: View {
         .clipShape(TopRounded())
         .overlay(TopRounded().stroke(xpBorder, lineWidth: 1))
         .background(WindowSetup())
-        .onReceive(timer) { tick = $0 }
+        .onReceive(timer) { tick = $0; if page == .components { cltOK = commandLineToolsReady(); freeGB = freeDiskGB() } }
         .onChange(of: inst.phase) { _ in inst.refresh() }
         .onDrop(of: [.fileURL], isTargeted: $targeted) { providers in
             guard page == .select || page == .welcome || page == .license, let p = providers.first else { return false }
@@ -507,6 +527,36 @@ struct ContentView: View {
         }
     }
 
+    var components: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            HStack(spacing: 6) {
+                Image(systemName: "checkmark.square.fill").foregroundColor(Color(hex: 0x8A8A8A))
+                Text("Build tools: Ghidra, Java 21 and Unicorn (about 0.8 GB, downloaded for you)").font(tahoma()).foregroundColor(Color(hex: 0x555555))
+            }
+            XPCheck(title: "Intro movies: download ffmpeg (about 28 MB)", on: $inst.movies)
+            Text("Without it the game still works, but skips its logo and intro movies.").font(tahoma()).foregroundColor(Color(hex: 0x555555)).padding(.leading, 19)
+            Etched().padding(.vertical, 4)
+            Text("Checking this Mac").font(tahoma(11, bold: true))
+            statusRow(cltOK, cltOK ? "Apple Command Line Tools are installed." : "Apple Command Line Tools are missing. They are free and need no Apple ID.") {
+                if !cltOK { XPButton(title: "Install…") { installCLT() } }
+            }
+            statusRow(freeGB >= 4, String(format: "Free disk space: %.0f GB (about 4 GB are needed).", freeGB)) { EmptyView() }
+            if !cltOK { Text("Click Install…, follow Apple's window (about 10 minutes), then come back here. This page notices by itself.").font(tahoma()).foregroundColor(Color(hex: 0x555555)) }
+        }
+    }
+    func statusRow<A: View>(_ ok: Bool, _ text: String, @ViewBuilder _ action: () -> A) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: ok ? "checkmark.circle.fill" : "xmark.circle.fill").foregroundColor(ok ? Color(hex: 0x21A121) : Color(hex: 0xC8381A))
+            Text(text).font(tahoma()).fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+            action()
+        }
+    }
+    func installCLT() {
+        let p = Process(); p.executableURL = URL(fileURLWithPath: "/usr/bin/xcode-select"); p.arguments = ["--install"]
+        p.standardOutput = Pipe(); p.standardError = Pipe(); try? p.run()
+    }
+
     var installPage: some View {
         switch inst.phase {
         case .done: return AnyView(finishDone)
@@ -543,7 +593,8 @@ struct ContentView: View {
             VStack(alignment: .leading, spacing: 12) {
                 Text("Completing the Might and Magic IX Native Setup Wizard").font(tahoma(14, bold: true))
                 Text("MM9 Native is now in the Applications folder in your home folder (~/Applications).").font(tahoma())
-                Text("Movies need ffmpeg (brew install ffmpeg); the game works without it.").font(tahoma()).foregroundColor(Color(hex: 0x555555))
+                Text(FileManager.default.isExecutableFile(atPath: supportDir + "/tools/ffmpeg") ? "The intro movies are enabled (ffmpeg was downloaded)."
+                     : "Movies need ffmpeg (brew install ffmpeg); the game works without it.").font(tahoma()).foregroundColor(Color(hex: 0x555555))
                 Spacer()
                 XPCheck(title: "Launch MM9 Native", on: $launch)
                 Text("Click Finish to close the wizard.").font(tahoma())
@@ -579,24 +630,25 @@ struct ContentView: View {
                 XPButton(title: "Cancel") { inst.cancel() }
             default:
                 XPButton(title: "< Back") { back() }.disabled(page == .welcome)
-                XPButton(title: page == .select ? "Install" : "Next >", isDefault: true) { next() }.disabled(!canNext)
+                XPButton(title: page == .components ? "Install" : "Next >", isDefault: true) { next() }.disabled(!canNext)
                 XPButton(title: "Cancel") { NSApp.terminate(nil) }
             }
         }
     }
     var canNext: Bool {
-        switch page { case .welcome: return true; case .license: return accepted; case .select: return useExisting || !path.isEmpty; case .install: return false }
+        switch page { case .welcome: return true; case .license: return accepted; case .select: return useExisting || !path.isEmpty; case .components: return cltOK && freeGB >= 4; case .install: return false }
     }
     func next() {
         switch page {
         case .welcome: page = .license
         case .license: page = .select; if inst.gameFolderPresent && path.isEmpty { useExisting = true }
-        case .select: page = .install; inst.start(useExisting ? nil : path)
+        case .select: page = .components; cltOK = commandLineToolsReady(); freeGB = freeDiskGB()
+        case .components: page = .install; inst.start(useExisting ? nil : path)
         case .install: break
         }
     }
     func back() {
-        switch page { case .license: page = .welcome; case .select: page = .license; default: break }
+        switch page { case .license: page = .welcome; case .select: page = .license; case .components: page = .select; default: break }
     }
     func choose() {
         let panel = NSOpenPanel()

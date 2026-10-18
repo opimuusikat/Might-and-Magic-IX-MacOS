@@ -61,3 +61,9 @@ JDK_SHA=3623232f33a9c3baadf304480b2535f9a3cba8a58d42ecbb438ba267315d9998
 JDK_TOP="jdk-21.0.12.1+1"
 UNICORN_URL="https://files.pythonhosted.org/packages/6c/ae/4943c6f8524d729ec7d5e69df6407ea05d710fe77471d91cecf3fc64eb57/unicorn-2.1.4-cp37-abi3-macosx_11_0_arm64.whl"
 UNICORN_SHA=d6c93e0f60328d8f4a1792af3f834137a28050fcc2305f2ec01efe8558a9844e
+
+# Optional movie support: a static ffmpeg for Apple Silicon (Martin Riedl's build server, ffmpeg 9.0.2, GPL build;
+# Apple-signed). Downloaded only when the player asks for it (MM9N_FFMPEG_DOWNLOAD=1), checked against this SHA-256,
+# and run as a separate program: nothing from it is linked into the game.
+FFMPEG_URL="https://ffmpeg.martin-riedl.de/download/macos/arm64/1789931890_9.0.2/ffmpeg.zip"
+FFMPEG_SHA=c8ed4c4e6978a03c485edbfe4e0a5dc2380f8a30bba5150531b31b094492d924
