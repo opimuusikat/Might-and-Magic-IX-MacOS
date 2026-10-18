@@ -15,6 +15,11 @@ Cocoa, and Bink movies through the `ffmpeg` tool. No Wine, no Rosetta.
 > Mac. Piracy is not supported; please do not ask for or share game files, or the app the builder
 > makes.
 
+> **Made entirely with AI.** All the code here (the recompiler, the native host, the builder and the
+> installer), the documentation and the logo were produced with AI. The code and docs were written
+> by Claude through Claude Code, with a person directing the work and testing the game. Treat it
+> as an experiment and expect rough edges.
+
 ## How to install (step by step, for everyone)
 
 You do **not** need to know anything about computers or programming. Just follow the steps in order.

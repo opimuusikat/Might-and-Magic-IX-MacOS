@@ -8,6 +8,10 @@ For educational and research purposes only. This package contains no game code, 
 nothing derived from a game. You must bring your own legally purchased copy of Might and Magic IX
 (GOG release 1.3).
 
+Made entirely with AI: the code, the documentation and the logo were all produced with AI. The code
+and docs were written by Claude through Claude Code, with a person directing the work and testing
+the game. Treat it as an experiment and expect rough edges.
+
 The builder contains no part of the game. It reads YOUR OWN copy of the game, translates the
 game's code into a Mac program on YOUR Mac, and the result stays on your Mac. Because the app it
 makes contains the game's code, never share that app. Friends run this builder themselves.
