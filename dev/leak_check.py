@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Fail if a folder that is meant for sharing holds bytes from the game.
 
-    leak_check.py <game_dir> [<more game dirs>...] -- <package_dir>
+    leak_check.py <game_dir> [<more game dirs>...] [--known=<public library file>...] -- <package_dir>
 
 Checks every file under <package_dir>:
   - it must not be a PE image (MZ header with a PE signature);
@@ -30,7 +30,8 @@ def main():
         print(__doc__)
         return 2
     k = sys.argv.index("--")
-    games, pkgs = sys.argv[1:k], sys.argv[k + 1:]
+    games, pkgs = [a for a in sys.argv[1:k] if not a.startswith("--known=")], sys.argv[k + 1:]
+    known = [a[8:] for a in sys.argv[1:k] if a.startswith("--known=")]
     chunks, nfiles = set(), 0
     for g in games:
         for root, _, files in os.walk(g):
@@ -43,6 +44,12 @@ def main():
                     c = d[i:i + CH]
                     if len(set(c)) >= 12:
                         chunks.add(c)
+    # --known=<file>: a public third-party library (for example liblzma.a). Chunks that also occur in it
+    # are standard constant tables that the game happens to link too (CRC tables and the like), not game content.
+    for kf in known:
+        d = open(kf, "rb").read()
+        for i in range(len(d) - CH + 1):
+            chunks.discard(d[i:i + CH])
     if not chunks:
         print("leak check: no game files found in", games)
         return 2

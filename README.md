@@ -1,3 +1,5 @@
+<p align="center"><img src="installer/assets/logo.jpg" width="200" alt="Might and Magic IX Native"></p>
+
 # Might-and-Magic-IX-MacOS: bring-your-own-game native build of Might and Magic IX for Apple Silicon
 
 Translates the machine code of Might and Magic IX (2002, LithTech engine, 32-bit Windows) into C
@@ -38,7 +40,16 @@ Not done yet:
 - **Intel Macs:** the builder refuses to run on them. For Intel Macs, use the Wine version of the
   game.
 
-## Build it
+## Easiest way: the installer app
+
+Download `MM9-Native-Installer.dmg` from the [Releases](https://github.com/opimuusikat/Might-and-Magic-IX-MacOS/releases)
+page, open it and start **MM9 Native Installer**. The app is not notarised, so macOS blocks it the first time: on macOS 14 and
+older right-click → Open; on macOS 15 and newer open System Settings → Privacy & Security and click
+"Open Anyway". Drop your GOG installer (`setup_might_and_magic_9_writ_of_fate_1.3_….exe`) on its window; it
+unpacks the game, builds the native app and tells you when it is ready. It bundles its own
+`innoextract`, so no Homebrew is needed. The installer holds no game files; the game is built on your Mac.
+
+## Build it (from the command line)
 
 Requirements:
 - **The Mac:** Apple Silicon and macOS 13 or later.

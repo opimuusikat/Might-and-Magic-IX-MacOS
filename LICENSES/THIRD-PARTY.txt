@@ -17,9 +17,11 @@ Optional, installed by you
 - FFmpeg (for example: brew install ffmpeg). The app runs the ffmpeg command-line tool to play the
   game's Bink movies; nothing from FFmpeg is linked into the app.
 
-- innoextract (Daniel Scharrer, https://constexpr.org/innoextract/), zlib-style licence. If you start
-  from the GOG installer, the builder runs the innoextract command-line tool to unpack it
-  (for example: brew install innoextract); nothing from it is linked or included.
+- innoextract 1.9 (Daniel Scharrer, https://constexpr.org/innoextract/), zlib licence; see
+  innoextract-LICENSE.txt. The installer app (dev/make_installer.sh) bundles a static arm64 build of it
+  (dev/build_innoextract.sh; one include added for newer Boost) to unpack the GOG installer. It statically
+  links Boost (Boost Software License 1.0) and xz/liblzma (public domain) and zstd (BSD). When you run the
+  builder yourself, a copy from Homebrew (brew install innoextract) works too.
 
 Not included, and never shared: anything from Might and Magic IX. The builder reads your own copy
 of the game and makes everything game-derived on your Mac.

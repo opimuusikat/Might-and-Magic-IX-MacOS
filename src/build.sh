@@ -13,6 +13,8 @@
 #
 # Settings (environment variables, all optional):
 #   MM9N_GAME      game folder to build from (default: the Wine app's folder, or ask)
+#   MM9N_INSTALLER the GOG installer (setup_might_and_magic_9_...exe) to unpack and build from
+#   MM9N_INNOEXTRACT  path of the innoextract tool (default: the one next to the builder, or on PATH)
 #   MM9N_SUPPORT   where the game copy, saves and logs live
 #                  (default: ~/Library/Application Support/MM9 Native)
 #   MM9N_CACHE     tool cache (default: ~/Library/Caches/MM9 Native Builder; delete it any time)
@@ -166,6 +168,8 @@ Choose the game folder (the one that holds lithtech.exe), or the GOG installer f
 }
 if [ -n "${MM9N_GAME:-}" ]; then
   GAME_IN="${MM9N_GAME%/}"
+elif [ -n "${MM9N_INSTALLER:-}" ] && [ ! -f "$GAME/lithtech.exe" ]; then
+  GAME_IN=""; INSTALLER="$MM9N_INSTALLER"
 elif [ -f "$GAME/lithtech.exe" ]; then
   GAME_IN="$GAME"                      # rebuilding: the existing working copy is the input
 elif [ -f "$WINE_GAME/lithtech.exe" ]; then
@@ -177,7 +181,7 @@ fi
 if [ -n "$INSTALLER" ]; then
   [ -f "$INSTALLER" ] || fail "Installer not found: $INSTALLER"
   INNO=""
-  for c in "$(command -v innoextract 2>/dev/null)" /opt/homebrew/bin/innoextract /usr/local/bin/innoextract; do
+  for c in "${MM9N_INNOEXTRACT:-}" "$SRC/../bin/innoextract" "$(command -v innoextract 2>/dev/null)" /opt/homebrew/bin/innoextract /usr/local/bin/innoextract; do
     [ -n "$c" ] && [ -x "$c" ] && { INNO="$c"; break; }
   done
   [ -n "$INNO" ] || fail "Unpacking the installer needs the innoextract tool (brew install innoextract). Or run the Might and Magic IX app (Wine version) once so it unpacks the game, then run the builder again."
