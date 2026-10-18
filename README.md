@@ -150,8 +150,8 @@ Click **Try Again**, or **Copy log** and [open an issue](https://github.com/opim
 ### How to uninstall
 
 To remove MM9 Native, use the **uninstaller**, the **red** window. It finds what the installer and updater put
-on your Mac and moves it to the **Trash**, so you can still put things back until you empty it. Your saved
-games stay unless you tick them too.
+on your Mac and moves it to the **Trash**, so you can still put things back until you empty it. It can remove
+the Wine version of the game too, if you tick it. Your saved games stay unless you tick them too.
 
 <p align="center"><img src="docs/img/uninstaller-components.png" width="460" alt="MM9 Native Uninstaller: choose what to remove"></p>
 
@@ -162,15 +162,19 @@ games stay unless you tick them too.
 3. Click **Next >**. Tick what to remove; each line shows how much space it takes:
    - **MM9 Native app**: the game in `~/Applications` (or `/Applications`).
    - **Game copy, logs and build files**: `~/Library/Application Support/MM9 Native`, except your saves.
-   - **Also remove my saved games**: off at first. Leave it off and your saved games, `autoexec.cfg`, HD textures
-     and the updater's save backups stay where they are, so a later reinstall finds them again.
    - **Build tools**: Ghidra, Java 21 and Unicorn in `~/Library/Application Support/MM9 Native Builder`.
    - **Game settings**: the graphics and window options (`local.mm9-native`).
+   - **Wine version of the game**: off at first. Tick it to also remove the older Wine-based
+     `Might and Magic IX.app` and its folder, `~/Library/Application Support/Might and Magic IX` (its game copy
+     and Wine setup). MM9 Native does not need it.
+   - **Also remove my saved games**: off at first. Leave it off and the saved games, `autoexec.cfg` and HD
+     textures of every version you remove stay where they are (plus the updater's save backups), so a later
+     reinstall finds them again.
 4. Click **Uninstall**, then **Finish**. Empty the Trash to free the space (**Open Trash** opens it for you).
 
-The uninstaller never touches the Wine version of the game (`Might and Magic IX.app` and its folder) or your
-GOG installer. It only removes an `MM9 Native.app` that the builder made. You can delete the installer, updater
-and uninstaller apps themselves by dragging them to the Trash.
+The uninstaller never touches your GOG installer, and it only removes apps this project made: an
+`MM9 Native.app` from the builder, and a `Might and Magic IX.app` with the Wine version's bundle ID. You can
+delete the installer, updater and uninstaller apps themselves by dragging them to the Trash.
 
 ### Something went wrong?
 

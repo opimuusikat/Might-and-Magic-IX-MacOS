@@ -1,7 +1,7 @@
 // MM9 Native Uninstaller: a Windows XP style wizard (Luna-style red) that removes what the MM9 Native Installer
 // and Updater put on this Mac: the app, the game copy and build files, the build tools and the game's settings.
+// The Wine version of the game ("Might and Magic IX.app" and its folder) can be removed too, but only when ticked.
 // Saved games stay unless the player asks otherwise. Everything goes to the Trash, so it can be put back.
-// The Wine version of the game ("Might and Magic IX.app" and its folder) is never touched.
 // Nothing from the game is in this app. MIT licence (see LICENSES/). Shares XPKit.swift with the installer.
 import SwiftUI
 
@@ -10,6 +10,8 @@ let oldToolsCache = "\(home)/Library/Caches/MM9 Native Builder"     // builder 1
 let prefDomain = "local.mm9-native"
 let prefFiles = ["\(home)/Library/Preferences/\(prefDomain).plist", "\(home)/Library/Saved Application State/\(prefDomain).savedState"]
 let appMarker = "Contents/Resources/mm9native-builder.txt"
+let wineBundleID = "local.mm9port.mightandmagic9"
+let wineSupport = (wineGame as NSString).deletingLastPathComponent     // game copy, Wine prefix and launcher.log
 /// Kept inside the game copy when the saves stay: the saves, the game's own settings file and the HD texture packs.
 let keptInGame: Set<String> = ["SaveGames", "autoexec.cfg", "HDTextures"]
 
@@ -43,8 +45,15 @@ struct Found {
     var toolsPresent = false
     var toolsSize: Int64 = 0
     var prefsPresent = false
-    var wineApp = false
-    var nothing: Bool { appPaths.isEmpty && !supportPresent && !toolsPresent && !prefsPresent }
+    var wineApps: [String] = []        // "Might and Magic IX.app" with the Wine version's bundle id
+    var foreignWine: [String] = []     // an app of that name that is not ours: left alone
+    var wineSupportPresent = false
+    var wineSize: Int64 = 0            // the Wine apps and their whole folder
+    var wineSavesSize: Int64 = 0       // what stays in that folder when the saves are kept
+    var wineSaves = 0
+    var winePresent: Bool { !wineApps.isEmpty || wineSupportPresent }
+    var wineApp: Bool { winePresent || !foreignWine.isEmpty }
+    var nothing: Bool { appPaths.isEmpty && !supportPresent && !toolsPresent && !prefsPresent && !winePresent }
 
     static func scan() -> Found {
         let fm = FileManager.default
@@ -63,7 +72,17 @@ struct Found {
         f.toolsPresent = fm.fileExists(atPath: toolsCache) || fm.fileExists(atPath: oldToolsCache)
         f.toolsSize = sizeOf(toolsCache) + sizeOf(oldToolsCache)
         f.prefsPresent = prefFiles.contains { fm.fileExists(atPath: $0) }
-        f.wineApp = fm.fileExists(atPath: "/Applications/Might and Magic IX.app") || fm.fileExists(atPath: "\(home)/Applications/Might and Magic IX.app")
+        for d in ["\(home)/Applications", "/Applications"] {
+            let p = "\(d)/Might and Magic IX.app"
+            guard fm.fileExists(atPath: p) else { continue }
+            if Bundle(path: p)?.bundleIdentifier == wineBundleID { f.wineApps.append(p); f.wineSize += sizeOf(p) } else { f.foreignWine.append(p) }
+        }
+        f.wineSupportPresent = fm.fileExists(atPath: wineSupport)
+        if f.wineSupportPresent {
+            f.wineSize += sizeOf(wineSupport)
+            f.wineSaves = children("\(wineGame)/SaveGames").count
+            f.wineSavesSize = keptInGame.reduce(0) { $0 + sizeOf("\(wineGame)/\($1)") }
+        }
         return f
     }
 
@@ -71,7 +90,8 @@ struct Found {
         var f = Found()
         f.appPaths = ["/Users/you/Applications/MM9 Native.app"]; f.appSize = 61_000_000
         f.supportPresent = true; f.supportSize = 1_420_000_000; f.savesSize = 3_100_000; f.saves = 12
-        f.toolsPresent = true; f.toolsSize = 812_000_000; f.prefsPresent = true; f.wineApp = true
+        f.toolsPresent = true; f.toolsSize = 812_000_000; f.prefsPresent = true
+        f.wineApps = ["/Applications/Might and Magic IX.app"]; f.wineSupportPresent = true; f.wineSize = 1_930_000_000; f.wineSavesSize = 2_400_000; f.wineSaves = 7
         return f
     }()
 }
@@ -85,6 +105,7 @@ final class UninstallModel: ObservableObject {
     @Published var removeSaves = false
     @Published var removeTools = true
     @Published var removePrefs = true
+    @Published var removeWine = false      // the Wine version is only removed when ticked
     @Published var phase: Phase = .idle
     @Published var step = 0
     @Published var steps = 1
@@ -123,14 +144,28 @@ final class UninstallModel: ObservableObject {
         }
     }
 
-    func checkRunning() { if live { gameRunning = !NSRunningApplication.runningApplications(withBundleIdentifier: prefDomain).isEmpty } }
-    func quitGame() { NSRunningApplication.runningApplications(withBundleIdentifier: prefDomain).forEach { $0.terminate() } }
+    /// The games whose files would be moved: MM9 Native always, the Wine version only when ticked.
+    var watchedIDs: [String] { removeWine ? [prefDomain, wineBundleID] : [prefDomain] }
+    func checkRunning() { if live { gameRunning = watchedIDs.contains { !NSRunningApplication.runningApplications(withBundleIdentifier: $0).isEmpty } } }
+    func quitGame() { for id in watchedIDs { NSRunningApplication.runningApplications(withBundleIdentifier: id).forEach { $0.terminate() } } }
 
-    var anything: Bool { removeApp || removeGame || removeTools || removePrefs }
-    var keepsSaves: Bool { removeGame && !removeSaves && (found?.savesSize ?? 0) > 0 }
+    var anything: Bool { removeApp || removeGame || removeTools || removePrefs || removeWine }
+    var savesAffected: Bool { removeGame || removeWine }
+    var keptSavesSize: Int64 { guard let f = found else { return 0 }; return (removeGame ? f.savesSize : 0) + (removeWine ? f.wineSavesSize : 0) }
+    var keepsSaves: Bool { !removeSaves && keptSavesSize > 0 }
     var toFree: Int64 {
         guard let f = found else { return 0 }
         return (removeApp ? f.appSize : 0) + (removeGame ? f.supportSize - (removeSaves ? 0 : f.savesSize) : 0) + (removeTools ? f.toolsSize : 0)
+            + (removeWine ? f.wineSize - (removeSaves ? 0 : f.wineSavesSize) : 0)
+    }
+    /// Moves everything in a game's folder to the Trash except its saves, settings file, HD textures and `extra` names.
+    private func trashKeepingSaves(support: String, game: String, extra: Set<String> = []) throws {
+        for c in children(support) where !extra.contains(c) {
+            if "\(support)/\(c)" == game { for g in children(game) where !keptInGame.contains(g) { try trash("\(game)/\(g)") } }
+            else { try trash("\(support)/\(c)") }
+        }
+        for k in keptInGame.sorted() where FileManager.default.fileExists(atPath: "\(game)/\(k)") { note("Kept: \(game)/\(k)") }
+        for c in extra.sorted() where FileManager.default.fileExists(atPath: "\(support)/\(c)") { note("Kept: \(support)/\(c)") }
     }
 
     /// Moves the chosen items to the Trash, one group per step.
@@ -141,13 +176,7 @@ final class UninstallModel: ObservableObject {
         if removeGame && f.supportPresent {
             let keep = !removeSaves
             plan.append((keep ? "Moving the game copy and build files to the Trash" : "Moving the game copy, saved games and build files to the Trash", {
-                guard keep else { try self.trash(supportDir); return }
-                for c in children(supportDir) where c != "backups" {
-                    if c == "game" { for g in children(gameCopy) where !keptInGame.contains(g) { try self.trash("\(gameCopy)/\(g)") } }
-                    else { try self.trash("\(supportDir)/\(c)") }
-                }
-                for k in keptInGame.sorted() where FileManager.default.fileExists(atPath: "\(gameCopy)/\(k)") { self.note("Kept: \(gameCopy)/\(k)") }
-                if FileManager.default.fileExists(atPath: "\(supportDir)/backups") { self.note("Kept: \(supportDir)/backups") }
+                if keep { try self.trashKeepingSaves(support: supportDir, game: gameCopy, extra: ["backups"]) } else { try self.trash(supportDir) }
             }))
         }
         if removeTools && f.toolsPresent { plan.append(("Moving the build tools to the Trash", { for p in [toolsCache, oldToolsCache] { try self.trash(p) } })) }
@@ -157,6 +186,14 @@ final class UninstallModel: ObservableObject {
                 p.standardOutput = FileHandle.nullDevice; p.standardError = FileHandle.nullDevice
                 if (try? p.run()) != nil { p.waitUntilExit() }
                 for p in prefFiles { try self.trash(p) }
+            }))
+        }
+        if removeWine && f.winePresent {
+            let keep = !removeSaves
+            plan.append((keep ? "Moving the Wine version to the Trash (its saves stay)" : "Moving the Wine version and its saves to the Trash", {
+                for p in f.wineApps { try self.trash(p) }
+                guard f.wineSupportPresent else { return }
+                if keep { try self.trashKeepingSaves(support: wineSupport, game: wineGame) } else { try self.trash(wineSupport) }
             }))
         }
         steps = max(plan.count, 1); step = 0; log = []; freed = 0; phase = .running
@@ -232,7 +269,7 @@ struct UninstallerRoot: View {
                 Text("Welcome to the Might and Magic IX Native Uninstall Wizard").font(tahoma(14, bold: true))
                 Text("This wizard removes MM9 Native from your Mac: the app, the game copy it was built from, the build tools and the game's settings.").font(tahoma())
                 Text("Your saved games are kept unless you choose to remove them. Everything goes to the Trash, so you can still put it back.").font(tahoma())
-                Text("The Wine version of the game (Might and Magic IX.app) and your GOG installer are not touched.").font(tahoma()).foregroundColor(Color(hex: 0x555555))
+                Text("The Wine version of the game (Might and Magic IX.app) is only removed if you tick it. Your GOG installer is never touched.").font(tahoma()).foregroundColor(Color(hex: 0x555555))
                 Spacer()
                 Text("Click Next to continue.").font(tahoma())
                 GitHubLink()
@@ -245,8 +282,8 @@ struct UninstallerRoot: View {
             if f.nothing {
                 VStack(alignment: .leading, spacing: 8) {
                     XPStatusRow(level: .info, text: "MM9 Native is not installed on this Mac. There is nothing to remove.") { EmptyView() }
-                    ForEach(f.foreignApps, id: \.self) { p in
-                        XPStatusRow(level: .warn, text: "\(p) was not made by the MM9 Native builder, so it is left alone.") { EmptyView() }
+                    ForEach(f.foreignApps + f.foreignWine, id: \.self) { p in
+                        XPStatusRow(level: .warn, text: "\(p) was not made by this project, so it is left alone.") { EmptyView() }
                     }
                     Spacer(minLength: 0)
                 }
@@ -254,22 +291,23 @@ struct UninstallerRoot: View {
                 VStack(alignment: .leading, spacing: 7) {
                     row("MM9 Native app", f.appSize, on: $m.removeApp, present: !f.appPaths.isEmpty)
                     row("Game copy, logs and build files", f.supportSize - f.savesSize, on: $m.removeGame, present: f.supportPresent)
-                    XPCheck(title: "Also remove my saved games (\(f.saves) saved games, HD textures, backups: \(bytes(f.savesSize)))",
-                            on: Binding(get: { m.removeGame && m.removeSaves }, set: { m.removeSaves = $0 }), locked: !m.removeGame || f.savesSize == 0)
-                        .padding(.leading, 19)
                     row("Build tools: Ghidra, Java 21 and Unicorn", f.toolsSize, on: $m.removeTools, present: f.toolsPresent)
                     row("Game settings (graphics and window options)", 0, on: $m.removePrefs, present: f.prefsPresent)
+                    row("Wine version of the game: app, Wine and its game copy", f.wineSize - f.wineSavesSize, on: $m.removeWine, present: f.winePresent)
+                    let saves = (m.removeGame ? f.saves : 0) + (m.removeWine ? f.wineSaves : 0)
+                    XPCheck(title: "Also remove my saved games (\(saves) saved games, HD textures\(m.removeGame ? ", backups" : ""): \(bytes(m.keptSavesSize)))",
+                            on: Binding(get: { m.savesAffected && m.removeSaves }, set: { m.removeSaves = $0 }), locked: !m.savesAffected || m.keptSavesSize == 0)
                     Etched().padding(.vertical, 3)
-                    if m.removeGame && m.removeSaves {
+                    if m.savesAffected && m.removeSaves && m.keptSavesSize > 0 {
                         XPStatusRow(level: .warn, text: "Your saved games will go to the Trash too. Empty the Trash only if you are sure.") { EmptyView() }
-                    } else if m.removeGame && f.savesSize > 0 {
-                        XPStatusRow(level: .info, text: "Saved games stay in ~/Library/Application Support/MM9 Native.") { EmptyView() }
+                    } else if m.keepsSaves {
+                        XPStatusRow(level: .info, text: "Saved games stay where they are, in ~/Library/Application Support.") { EmptyView() }
                     }
                     if m.gameRunning {
-                        XPStatusRow(level: .bad, text: "MM9 Native is running. Quit it first.") { XPButton(title: "Quit Game") { m.quitGame() } }
+                        XPStatusRow(level: .bad, text: "The game is running. Quit it first.") { XPButton(title: "Quit Game") { m.quitGame() } }
                     }
-                    ForEach(f.foreignApps, id: \.self) { p in
-                        XPStatusRow(level: .warn, text: "\(p) was not made by the builder; it is left alone.") { EmptyView() }
+                    ForEach(f.foreignApps + f.foreignWine, id: \.self) { p in
+                        XPStatusRow(level: .warn, text: "\(p) was not made by this project; it is left alone.") { EmptyView() }
                     }
                     Spacer(minLength: 0)
                     Text("Space freed after you empty the Trash: \(bytes(m.toFree)).").font(tahoma(11, bold: true))
@@ -324,9 +362,11 @@ struct UninstallerRoot: View {
                 Text("Completing the Might and Magic IX Native Uninstall Wizard").font(tahoma(14, bold: true))
                 Text("MM9 Native was removed. The removed items are in the Trash; empty it to free \(bytes(m.freed)).").font(tahoma())
                 if m.keepsSaves {
-                    Text("Your saved games were kept in ~/Library/Application Support/MM9 Native. If you install MM9 Native again, they are still there.").font(tahoma()).foregroundColor(Color(hex: 0x555555))
+                    Text("Your saved games were kept in ~/Library/Application Support. If you install the game again, they are still there.").font(tahoma()).foregroundColor(Color(hex: 0x555555))
                 }
-                if m.found?.wineApp ?? false {
+                if m.removeWine {
+                    Text("The Wine version of the game was removed too.").font(tahoma()).foregroundColor(Color(hex: 0x555555))
+                } else if m.found?.wineApp ?? false {
                     Text("The Wine version of the game was not touched.").font(tahoma()).foregroundColor(Color(hex: 0x555555))
                 }
                 XPCheck(title: "Show details", on: $showDetails)
