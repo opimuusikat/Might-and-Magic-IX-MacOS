@@ -748,7 +748,7 @@ modules appears in any packaged file, or if a packaged file is a PE image.
 | memory | Ghidra heap 4 GB per module, one module at a time (6 GB today) | 8 GB Macs work, but slower |
 
 No Homebrew, no admin password and no Apple ID. Downloads go through `curl`, so the downloaded
-tools carry no quarantine flag. The tools are cached in `~/Library/Caches/MM9 Native Builder`.
+tools carry no quarantine flag. The tools are cached in `~/Library/Application Support/MM9 Native Builder`, not in `~/Library/Caches`: Ghidra skips any jar whose path contains "caches" and then fails with "Unable to locate extension points".
 
 **Ghidra + JDK versus an embedded SLEIGH lifter: recommend Ghidra + JDK, pinned.**
 - **Ghidra is what was validated.** The 99.5 % difftest and the owner's play test both ran on

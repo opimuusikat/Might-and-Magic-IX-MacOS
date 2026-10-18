@@ -67,7 +67,7 @@ If the game itself misbehaves, send ~/Library/Application Support/MM9 Native/log
 REMOVING IT
 -----------
 Delete "MM9 Native.app", the folder ~/Library/Application Support/MM9 Native (this deletes your
-native saves!) and the tool cache ~/Library/Caches/MM9 Native Builder (1.2 GB). You can delete the
+native saves!) and the tool cache ~/Library/Application Support/MM9 Native Builder (1.2 GB). You can delete the
 tool cache at any time; the builder downloads the tools again if you rebuild.
 
 

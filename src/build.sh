@@ -17,7 +17,9 @@
 #   MM9N_INNOEXTRACT  path of the innoextract tool (default: the one next to the builder, or on PATH)
 #   MM9N_SUPPORT   where the game copy, saves and logs live
 #                  (default: ~/Library/Application Support/MM9 Native)
-#   MM9N_CACHE     tool cache (default: ~/Library/Caches/MM9 Native Builder; delete it any time)
+#   MM9N_CACHE     tool cache (default: ~/Library/Application Support/MM9 Native Builder; delete it
+#                  any time). Not under ~/Library/Caches: Ghidra skips every jar whose path contains
+#                  "caches", finds none of its own classes and stops with "Unable to locate extension points".
 #   MM9N_APPDIR    where the app goes (default: ~/Applications)
 #   MM9N_DIALOGS=0 no dialog windows (errors only in Terminal)
 #   MM9N_KEEP_WORK=1  keep the 1 GB of intermediate files after a successful build
@@ -33,7 +35,8 @@ SRC="$(cd "$(dirname "$0")" && pwd)"
 . "$SRC/manifest.sh"
 
 SUPPORT="${MM9N_SUPPORT:-$HOME/Library/Application Support/MM9 Native}"
-CACHE="${MM9N_CACHE:-$HOME/Library/Caches/MM9 Native Builder}"
+CACHE="${MM9N_CACHE:-$HOME/Library/Application Support/MM9 Native Builder}"
+OLD_CACHE="$HOME/Library/Caches/MM9 Native Builder"   # builder 1.0's default, where Ghidra cannot start
 APPDIR="${MM9N_APPDIR:-$HOME/Applications}"
 WINE_GAME="$HOME/Library/Application Support/Might and Magic IX/game"
 GAME="$SUPPORT/game"                   # the working copy the native game runs in (saves live here)
@@ -127,6 +130,14 @@ osv="$(/usr/bin/sw_vers -productVersion)"
 if ! /usr/bin/xcode-select -p > /dev/null 2>&1 || ! /usr/bin/xcrun --find clang > /dev/null 2>&1; then
   /usr/bin/xcode-select --install > /dev/null 2>&1
   fail "Apple's Command Line Tools are not installed. A window to install them should have opened (if not, run: xcode-select --install). Install them (about 10 minutes, no Apple ID needed), then run the builder again."
+fi
+# Ghidra ignores jars whose path contains these words (ClassJar.ignoreJar) and then cannot start.
+case "$(printf '%s' "$CACHE" | tr '[:upper:]' '[:lower:]')" in
+  *caches*|*externallibraries*|*flatrepo*)
+    fail "The tool folder $CACHE has \"Caches\", \"ExternalLibraries\" or \"flatrepo\" in its path, and Ghidra cannot start from there. Unset MM9N_CACHE or point it somewhere else." ;;
+esac
+if [ -z "${MM9N_CACHE:-}" ] && [ -d "$OLD_CACHE" ]; then
+  rm -rf "$OLD_CACHE" && say "removed the old tool folder $OLD_CACHE (Ghidra cannot start from there)"
 fi
 mkdir -p "$WORK" || fail "Cannot create $WORK"
 printf 'int main(void) { return 0; }\n' > "$WORK/cc-test.c"
