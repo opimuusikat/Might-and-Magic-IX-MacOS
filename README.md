@@ -15,6 +15,105 @@ Cocoa, and Bink movies through the `ffmpeg` tool. No Wine, no Rosetta.
 > Mac. Piracy is not supported; please do not ask for or share game files, or the app the builder
 > makes.
 
+## How to install (step by step, for everyone)
+
+You do **not** need to know anything about computers or programming. Just follow the steps in order.
+It takes about 5 to 30 minutes, and most of that is the computer working by itself.
+
+### Before you start: check three things
+
+1. **You must own the game.** This project does not contain the game. You need your own copy of
+   **Might and Magic IX (Writ of Fate) from GOG.com**, version **1.3**. Buying it on
+   [gog.com](https://www.gog.com) is the only legal way to get it.
+2. **Your Mac must have an Apple chip (M1, M2, M3, M4 or newer).** Click the Apple logo in the top left
+   corner, then **About This Mac**. If it says **Chip: Apple M…**, you are fine. If it says
+   **Processor: Intel**, this will not work on your Mac.
+3. **Your Mac needs macOS 13 or newer, about 4 GB of free space and internet.** The same "About This Mac"
+   window shows the macOS version.
+
+### Step 1: Download your game installer from GOG
+
+1. Log in to [gog.com](https://www.gog.com) and open **Your library** → **Might and Magic IX**.
+2. Find **Download offline backup game installers** and choose the **Windows** version.
+3. Download the file whose name starts with `setup_might_and_magic_9_writ_of_fate_1.3_…` and ends with
+   `.exe`. It lands in your **Downloads** folder. *(You will not run it. The installer below reads it for
+   you. Do not worry that it is a Windows file.)*
+4. If GOG gives you more than one file (for example also a `.bin` file), keep **all** of them together in
+   the same folder.
+
+### Step 2: Download the installer app
+
+1. Open the [**Releases** page](https://github.com/opimuusikat/Might-and-Magic-IX-MacOS/releases/latest).
+2. Under **Assets**, click **`MM9-Native-Installer.dmg`** to download it.
+3. Open the downloaded `.dmg` file by double-clicking it (it is in your **Downloads** folder). A small
+   window opens with the **MM9 Native Installer** app in it.
+4. Drag **MM9 Native Installer** onto the **Applications** folder in that window. Then you can close the
+   window.
+
+### Step 3: Open the installer app (the first time, macOS is cautious)
+
+The app is not signed by Apple (that costs money), so macOS first says it "cannot verify" it. That is
+normal. This project is open source and you can read all of its code here.
+
+- **Mac with macOS 15 (Sequoia) or newer:**
+  1. Open **Applications** and double-click **MM9 Native Installer**. A message appears. Click **Done**
+     (not "Move to Trash").
+  2. Click the Apple logo → **System Settings** → **Privacy & Security**.
+  3. Scroll all the way down. Next to the text about "MM9 Native Installer" click **Open Anyway**.
+  4. Type your Mac password or use Touch ID, then click **Open Anyway** again.
+- **Mac with macOS 14 or older:** open **Applications**, **hold the Control key and click** (or
+  right-click) **MM9 Native Installer**, choose **Open**, then click **Open** again.
+
+You only have to do this once. Next time it opens normally.
+
+### Step 4: Follow the windows (it looks like an old Windows XP installer)
+
+<p align="center">
+<img src="docs/img/installer-welcome.png" width="420" alt="Welcome window">
+&nbsp;
+<img src="docs/img/installer-select.png" width="420" alt="Select your game window">
+</p>
+
+1. Click **Next >** on the first page.
+2. Read the notice, click **I accept the terms of this notice**, then **Next >**.
+3. Click **Browse…** and pick the `setup_might_and_magic_9_….exe` file from your **Downloads** folder.
+   (Shortcut: you can also drag the file onto the window.) Then click **Install**.
+4. **Wait.** A green bar shows the progress. This takes about 3 minutes on a fast Mac and up to 25
+   minutes on an older one. **Keep the window open and do not close the lid.** You can click **Show details** if you are curious.
+   - If a message asks you to install **Command Line Tools** (a free tool from Apple), click
+     **Install**, wait until it is done, and then click **Try Again** in the installer window.
+5. When you see **Completing the Might and Magic IX Native Setup Wizard**, click **Finish**. The game
+   starts (if the box **Launch MM9 Native** is ticked).
+
+### Step 5: Play
+
+The game is now installed as **MM9 Native** in the **Applications** folder **inside your home folder**:
+in Finder click **Go** in the top menu → **Home**, then open the **Applications** folder. Drag it to
+your Dock to start it quickly next time.
+
+- **Ctrl + Cmd + F:** full screen on and off. **Cmd + Esc:** frees the mouse. **Cmd + Q:** quit.
+- **Intro movies:** these need a free tool called ffmpeg. Without it the game still works and just
+  skips the movies. (To add it: install [Homebrew](https://brew.sh), then type `brew install ffmpeg`
+  in the Terminal app.)
+- **Your saves** are in `~/Library/Application Support/MM9 Native/game/SaveGames`.
+
+> **Do not share the finished game with anyone.** It contains the game's own code, which belongs to its
+> owner. A friend who wants it should follow these same steps with their own GOG copy.
+
+### Something went wrong?
+
+| What you see | What to do |
+|---|---|
+| macOS says the app "can't be opened" or "is damaged" | Do Step 3 again (Open Anyway / right-click → Open). |
+| "This Mac does not have Apple Silicon" | Your Mac has an Intel chip. This does not work on Intel Macs. |
+| "…is not the expected version" or "does not look like the GOG installer" | You need the **GOG** version **1.3**. A Steam copy, a disc copy or an older GOG version will not work. Download the newest installer from your GOG library. |
+| "Not enough free disk space" | Free up about 4 GB (empty the Trash, delete old downloads) and click **Try Again**. |
+| "The build stopped at step …" | Click **Try Again**. If it fails again, click **Copy log** and [open an issue](https://github.com/opimuusikat/Might-and-Magic-IX-MacOS/issues) and paste the log there. The log contains only tool output and file names. |
+| You closed the window by accident | Open the installer again and choose **Use the game already on this Mac**. It continues from where it was. |
+
+Questions or problems? Please [open an issue](https://github.com/opimuusikat/Might-and-Magic-IX-MacOS/issues)
+or visit my GitHub profile: [github.com/opimuusikat](https://github.com/opimuusikat).
+
 ## Status
 
 **Might and Magic IX runs natively on Apple Silicon macOS.** The builder translates all five code
@@ -39,15 +138,6 @@ Not done yet:
   and back buffer → primary Blts.
 - **Intel Macs:** the builder refuses to run on them. For Intel Macs, use the Wine version of the
   game.
-
-## Easiest way: the installer app
-
-Download `MM9-Native-Installer.dmg` from the [Releases](https://github.com/opimuusikat/Might-and-Magic-IX-MacOS/releases)
-page, open it and start **MM9 Native Installer**. The app is not notarised, so macOS blocks it the first time: on macOS 14 and
-older right-click → Open; on macOS 15 and newer open System Settings → Privacy & Security and click
-"Open Anyway". Drop your GOG installer (`setup_might_and_magic_9_writ_of_fate_1.3_….exe`) on its window; it
-unpacks the game, builds the native app and tells you when it is ready. It bundles its own
-`innoextract`, so no Homebrew is needed. The installer holds no game files; the game is built on your Mac.
 
 ## Build it (from the command line)
 
@@ -139,7 +229,9 @@ The full engineering notes, with measurements, are in [`docs/RECOMP-NOTES.md`](d
 | `src/recomp/` | `rt.h`, the emitter and flag-liveness pass (from Fallout-NV-MacOS, with fixes) |
 | `src/ghidra_scripts/` | the Fallout-NV-MacOS Ghidra scripts used by the build |
 | `src/tools/` | rebase, dispatch-table merge, icon tools |
-| `dev/` | maintainer tools: packaging with a leak check, source sync |
+| `installer/` | the Windows XP style installer app (SwiftUI) and its logo |
+| `dev/` | maintainer tools: packaging with a leak check, building the installer app and `.dmg`, source sync |
+| `docs/img/` | screenshots for this README |
 | `docs/RECOMP-NOTES.md` | feasibility study, milestones and measurements |
 
 ## Prior art and credits
