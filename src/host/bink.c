@@ -96,16 +96,15 @@ SHIM(_BinkSetSoundTrack) { sound_track = (int)ARG(c, 0); RET(c, 0, 1); }
 SHIM(_BinkOpen) {
     const char *name = GSTR(ARG(c, 0)); uint32_t flags = ARG(c, 1);
     Movie *m = NULL; for (int i = 0; i < MAXM && !m; i++) if (!mv[i].g) m = &mv[i];
-    char path[1024]; host_path(name ? name : "", path, sizeof path);
-    uint8_t hd[44] = {0};
-    FILE *f = fopen(path, "rb"); size_t n = f ? fread(hd, 1, sizeof hd, f) : 0; if (f) fclose(f);
+    char path[1024]; uint8_t hd[44] = {0};
+    FILE *f = host_path(name, path, sizeof path) ? fopen(path, "rb") : NULL; size_t n = f ? fread(hd, 1, sizeof hd, f) : 0; if (f) fclose(f);
     uint32_t v[11]; memcpy(v, hd, sizeof v);
     if (!m || n < sizeof hd || (memcmp(hd, "BIK", 3) && memcmp(hd, "KB2", 3)) || !v[2] || !v[5] || !v[6] || !v[7] || !v[8]) {
         fprintf(stderr, "[bink] BinkOpen(%s): %s\n", name ? name : "", !m ? "too many movies" : n ? "not a Bink file" : "not found");
         RET(c, 0, 2); return;
     }
     memset(m, 0, sizeof *m);
-    snprintf(m->path, sizeof m->path, "%s", path);
+    snprintf(m->path, sizeof m->path, "file:%s", path);      // "file:": ffmpeg never reads it as a URL
     m->frames = v[2]; m->w = v[5]; m->h = v[6]; m->num = v[7]; m->den = v[8] ? v[8] : 1;
     m->vfd = -1; m->audio = -1; m->vpid = m->apid = -1;
     m->cur = calloc((size_t)m->w * m->h, 4);

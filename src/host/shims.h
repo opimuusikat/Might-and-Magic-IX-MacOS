@@ -11,8 +11,9 @@ typedef struct { const Shim *list; int count; } ShimTable;
 extern _Thread_local uint32_t host_last_error;
 #define SETERR(e) (host_last_error = (e))
 
-// Windows path -> host path (backslashes, drive letters, the game root)
-void host_path(const char *win, char *out, size_t n);
+// Windows path -> host path relative to the game root (backslashes, drive letters, the guest's current
+// directory). 0: refused (it cannot be kept inside the game folder); `out` is then empty.
+int host_path(const char *win, char *out, size_t n);
 // UTF-16 guest string helpers
 void w2a(uint32_t w, char *out, size_t n);
 uint32_t wlen(uint32_t w);

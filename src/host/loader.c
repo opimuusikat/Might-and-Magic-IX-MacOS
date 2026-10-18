@@ -152,10 +152,10 @@ static uint32_t load_library(CPU *c, const char *winpath) {
     for (int i = 0; i < nmods; i++)
         if (!strcmp(mods[i].name, base)) { dll_attach(c, &mods[i]); return mods[i].base; }
     // not by name: open the file and compare its PE header with the known modules
-    char path[1024]; host_path(winpath, path, sizeof path);
-    long n; uint8_t *d = slurp(path, &n);
+    char path[1024]; long n; uint8_t *d = host_path(winpath, path, sizeof path) ? slurp(path, &n) : NULL;
     if (!d && !strchr(winpath, '\\') && !strchr(winpath, '/')) {
-        char p2[1024]; snprintf(p2, sizeof p2, "data/%s", winpath); d = slurp(p2, &n);
+        char p1[1024], p2[1024]; snprintf(p1, sizeof p1, "C:\\MM9\\data\\%s", winpath);
+        if (host_path(p1, p2, sizeof p2)) d = slurp(p2, &n);
     }
     if (!d) return 0;
     uint32_t pe = n > 0x40 ? rd32(d + 0x3C) : 0;

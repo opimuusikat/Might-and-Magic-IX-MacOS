@@ -615,8 +615,9 @@ icon with a green "NATIVE" ribbon). It is ad-hoc signed. Rebuild it with `m1/scr
   blits: one GPU round trip per save.
 - **The real bug behind the empty list.** The host ignored `SetCurrentDirectoryA`. Load Game changes
   into `C:\MM9\savegames\` and then lists `*.hdr`, so it found nothing. The host now keeps a guest
-  current directory (`shims_files.c`). Relative paths resolve against it, `..` above the game root is
-  kept as on Windows, and GetCurrentDirectory and GetFullPathName report it.
+  current directory (`shims_files.c`). Relative paths resolve against it, and GetCurrentDirectory and
+  GetFullPathName report it. (`..` above the game root used to be kept as on Windows; since the path
+  confinement below it is refused.)
 - **Save format.** `<name>.HDR` holds the world name at 0, then a 200×150 32-bit thumbnail at 0x58,
   stored column by column (120,000 bytes), then the party.
 - **Verified with frame dumps:**
@@ -946,3 +947,48 @@ time with a 6 GB heap):
 - **Keeping the sources in step.** After `m1/host` changes, run `native-builder/dev/sync_from_m1.sh`
   and then `dev/package.sh`. The reference hashes in `src/manifest.sh` change only if the Ghidra
   scripts, the rebase, Ghidra itself or the emitter's function set change.
+
+## Host hardening: guest paths stay inside the game folder (2026-10-18)
+
+A security review before publishing noted that the host's guest-path mapping let game-side paths
+reach outside the game folder. A leading `\` became an absolute host path, and `..` above the root
+was kept as `../`, so guest code could reach any file the user can (like Wine's `Z:` drive). Only the
+original, hash-checked game code runs, so this is hardening, not a fix for an exposure.
+
+**What changed (`m1/host/shims_files.c`, `host_path`).**
+- Every guest path now maps to a clean path relative to the game root (the current directory at
+  start). The result has no `.` or `..` parts and no leading `/`.
+- `C:\MM9\x`, `\x`, `\MM9\x`, any other drive letter, `\\server\share\x` and `\\?\` long paths all
+  resolve from the root. Relative paths resolve from the guest's current directory.
+- The following are logged as `[file] refused ...` and fail as "path not found":
+  - `..` above the root;
+  - NULL;
+  - paths too long or too deep;
+  - `\\.\` device paths.
+  A final check also refuses any absolute result or leftover `..` part.
+- `host_path` now returns 0 on refusal. Every caller checks it: CreateFile, Find*, Get/WritePrivateProfile*,
+  Delete/Move/CopyFile, CreateDirectory, GetFileAttributes and SetCurrentDirectory, plus LoadLibrary's
+  file lookup (`loader.c`, including its `data\` fallback), GetTempFileName (`k32.c`), Miles streams
+  (`audio.c`) and Bink (`bink.c`).
+- Bink passes ffmpeg `file:<path>`, so a movie name is never read as a URL or protocol.
+
+**Why `..` above the root is refused, not clamped.** The engine probes `..\*.fxd` at every start. On
+Windows that lists the folder above the install, which has no game files. Clamping it to the root
+made the engine find `clientfx.fxd` there and load it a second time. Refusing it keeps the old result
+(nothing found) and still keeps the probe inside the game folder.
+
+**Verified offscreen** on a throwaway APFS clone of `trace/game` (deleted afterwards):
+- **Main menu:** renders; `clientfx.fxd` is loaded once, as before. The only refused path in a
+  whole session is the `..\*.fxd` probe.
+- **Load Game:** lists the autosave with its preview, game time and place (SetCurrentDirectory into
+  `savegames`, then `*.hdr`). Load goes into the world.
+- **Saving:** F5 in the world writes `savegames/quicksave.HDR` and `.MM9`. autoexec.cfg is read at
+  start and rewritten at quit.
+- **Movies:** the 3DO logo plays through ffmpeg; no ffmpeg processes are left behind.
+- **Temp copies:** the `C:\MM9\m1tmp\` lookup behaves as before.
+- **Unit test:** 33 path cases (drive letters, UNC, `\\?\` and `\\.\`, `..` chains, overlong and
+  over-deep paths, NULL) give the expected result.
+
+**Not covered.** Symbolic links already inside the game folder are followed. The game has no way to
+create one, so any such link was put there by the user.
+

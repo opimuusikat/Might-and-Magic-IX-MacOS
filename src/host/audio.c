@@ -552,7 +552,8 @@ SHIM(_AIL_3D_user_data) { VX(0); RET(c, x && A(1) < 8 ? (uint32_t)x->user[A(1)] 
 // streams (music)
 SHIM(_AIL_open_stream) {
     const char *name = GSTR(A(1));
-    char path[1024]; host_path(name ? name : "", path, sizeof path);
+    char path[1024];
+    if (!host_path(name, path, sizeof path)) { RET(c, 0, 3); return; }
     ExtAudioFileRef ef; CFURLRef url = CFURLCreateFromFileSystemRepresentation(NULL, (const UInt8 *)path, (CFIndex)strlen(path), false);
     OSStatus e = ExtAudioFileOpenURL(url, &ef); CFRelease(url);
     if (e) { fprintf(stderr, "[audio] open_stream(%s) failed (%d)\n", name, (int)e); RET(c, 0, 3); return; }

@@ -1,6 +1,7 @@
 // Files, directories, find-first/next, attributes and INI profile functions.
-// Windows paths map onto the host: '\' -> '/', a drive letter or the game's install path maps to
-// FNV_ROOT (default: the current directory, which holds Data/ and the INIs).
+// Windows paths map onto the host: '\' -> '/', a drive letter or the game's install path maps to the
+// game root (the current directory at start, which holds Data/ and the INIs).
+#include <ctype.h>
 #include <dirent.h>
 #include <fcntl.h>
 #include <fnmatch.h>
@@ -10,49 +11,80 @@
 #include <unistd.h>
 #include "shims.h"
 
+// Every guest path stays inside the game root. "C:\MM9\x", "\x", "\MM9\x", any other drive letter and
+// "\\server\share\x" all resolve from the root; relative paths from the guest's current directory below
+// it. The result is always a relative path with no "." or ".." parts and no leading '/', or "." for the
+// root itself, so guest code cannot name a file outside the game folder. Anything else is logged and
+// refused: host_path returns 0 and leaves `out` empty, which every file call rejects. That covers ".."
+// above the root (the engine probes "..\*.fxd" at start; on Windows that is the folder above the install,
+// where it finds nothing, and clamping it to the root would load clientfx.fxd twice), NULL, paths too
+// long or too deep, and "\\.\" device paths.
+static int confine_log(void) { static int n; return n++ < 50; }
+
 // The guest's current directory, relative to the game root ("" = the root; '/' separators). The engine
-// changes into SaveGames to list "*.hdr" for the Load Game screen. Relative paths resolve against it;
-// ".." above the root stays as a leading "../", as C:\MM9\.. would on Windows.
+// changes into SaveGames to list "*.hdr" for the Load Game screen.
 static char vcwd[1024];
-static void join_norm(const char *base, const char *rel, char *out, size_t n) {
-    char buf[2048]; snprintf(buf, sizeof buf, "%s%s%s", base, base[0] && rel[0] ? "/" : "", rel);
-    char *part[256], *sv = NULL; int np = 0, up = 0;
+// base + "/" + rel with "." and ".." resolved. 1: done; 0: too long or too deep; -1: ".." above the root
+static int join_norm(const char *base, const char *rel, char *out, size_t n) {
+    char buf[2048]; int l = snprintf(buf, sizeof buf, "%s/%s", base, rel);
+    out[0] = 0;
+    if (l < 0 || (size_t)l >= sizeof buf) return 0;
+    char *part[256], *sv = NULL; int np = 0;
     for (char *t = strtok_r(buf, "/", &sv); t; t = strtok_r(NULL, "/", &sv)) {
         if (!strcmp(t, ".")) continue;
-        if (!strcmp(t, "..")) { if (np) np--; else up++; continue; }
-        if (np < 256) part[np++] = t;
+        if (!strcmp(t, "..")) { if (!np) return -1; np--; continue; }
+        if (np == 256) return 0;
+        part[np++] = t;
     }
-    size_t k = 0; out[0] = 0;
-    for (int i = 0; i < up && k + 4 < n; i++) k += (size_t)snprintf(out + k, n - k, "../");
-    for (int i = 0; i < np && k < n; i++) k += (size_t)snprintf(out + k, n - k, "%s%s", part[i], i + 1 < np ? "/" : "");
-    if (k && k < n && out[k - 1] == '/') out[k - 1] = 0;
+    size_t k = 0;
+    for (int i = 0; i < np; i++) {
+        int w = snprintf(out + k, n - k, "%s%s", i ? "/" : "", part[i]);
+        if (w < 0 || (size_t)w >= n - k) { out[0] = 0; return 0; }
+        k += (size_t)w;
+    }
+    return 1;
 }
-void host_path(const char *win, char *out, size_t n) {
-    // "C:\MM9\x\y" maps to the current directory (the cloned game dir); relative "x\y" to the guest's
-    // current directory below it
-    char tmp[1024]; size_t k = 0;
-    const char *p = win; int abs = 0;
-    if (p[0] && p[1] == ':') {
-        abs = 1; p += 2;
-        if (*p == '\\' || *p == '/') p++;
-        if (!strncasecmp(p, "MM9\\", 4) || !strncasecmp(p, "MM9/", 4)) p += 4;
-        else if (!strcasecmp(p, "MM9")) p += 3;
+// the last check: an absolute path or a ".." part (join_norm never leaves one)
+static int escapes(const char *p) {
+    if (p[0] == '/') return 1;
+    for (const char *s = p;; s++) {
+        if (s[0] == '.' && s[1] == '.' && (!s[2] || s[2] == '/')) return 1;
+        if (!(s = strchr(s, '/'))) return 0;
     }
-    for (; *p && k < sizeof tmp - 1; p++) tmp[k++] = *p == '\\' ? '/' : *p;
+}
+int host_path(const char *win, char *out, size_t n) {
+    out[0] = 0;
+    if (!win) { if (confine_log()) fprintf(stderr, "[file] refused NULL path\n"); return 0; }
+    char tmp[1024]; size_t k = 0;
+    for (const char *p = win; *p; p++) {
+        if (k == sizeof tmp - 1) { if (confine_log()) fprintf(stderr, "[file] refused \"%.80s...\": too long\n", win); return 0; }
+        tmp[k++] = *p == '\\' ? '/' : *p;
+    }
     tmp[k] = 0;
-    if (!abs && vcwd[0] && tmp[0] != '/') join_norm(vcwd, tmp, out, n);
-    else if (!tmp[0]) snprintf(out, n, ".");
-    else snprintf(out, n, "%s", tmp);
+    char *s = tmp; int abs = 0;
+    if (!strncmp(s, "//./", 4)) { if (confine_log()) fprintf(stderr, "[file] refused \"%.200s\": device path\n", win); return 0; }
+    if (!strncmp(s, "//?/", 4)) s += 4;                          // "\\?\C:\x": the long-path prefix
+    if (isalpha((unsigned char)s[0]) && s[1] == ':') s += 2;     // any drive letter is the game's drive
+    if (*s == '/') {                                             // from the drive root: the game root
+        abs = 1; while (*s == '/') s++;
+        if (!strncasecmp(s, "MM9", 3) && (!s[3] || s[3] == '/')) s += 3;
+    }
+    int r = join_norm(abs ? "" : vcwd, s, out, n);
+    if (r <= 0) {
+        if (confine_log()) fprintf(stderr, "[file] refused \"%.200s\": %s\n", win, r ? "outside the game folder" : "too long or too deep");
+        out[0] = 0; return 0;
+    }
+    if (escapes(out)) { if (confine_log()) fprintf(stderr, "[file] refused \"%.200s\" -> %.200s\n", win, out); out[0] = 0; return 0; }
     if (!out[0]) snprintf(out, n, ".");
+    return 1;
 }
 SHIM(SetCurrentDirectoryA) {
-    char p[1024], norm[1024]; host_path(GSTR(ARG(c, 0)), p, sizeof p);
-    join_norm("", strcmp(p, ".") ? p : "", norm, sizeof norm);
-    struct stat st;
-    if (stat(norm[0] ? norm : ".", &st) || !S_ISDIR(st.st_mode)) {
-        fprintf(stderr, "[file] SetCurrentDirectoryA(%s): no such directory\n", GSTR(ARG(c, 0))); SETERR(3); RET(c, 0, 1); return;
+    char p[1024]; struct stat st;
+    if (!host_path(GSTR(ARG(c, 0)), p, sizeof p) || stat(p, &st) || !S_ISDIR(st.st_mode)) {
+        fprintf(stderr, "[file] SetCurrentDirectoryA(%s): no such directory\n", GSTR(ARG(c, 0)) ? GSTR(ARG(c, 0)) : "NULL");
+        SETERR(3); RET(c, 0, 1); return;
     }
-    snprintf(vcwd, sizeof vcwd, "%s", norm);
+    snprintf(vcwd, sizeof vcwd, "%s", strcmp(p, ".") ? p : "");
     RET(c, 1, 1);
 }
 static void guest_cwd(char *out, size_t n) {
@@ -73,7 +105,8 @@ static int trace_files(void) { static int t = -1; if (t < 0) t = getenv("FNV_TRA
 typedef struct { int fd; } FileObj;
 
 static uint32_t open_file(const char *winpath, uint32_t access, uint32_t disp) {
-    char path[1024]; host_path(winpath, path, sizeof path);
+    char path[1024];
+    if (!host_path(winpath, path, sizeof path)) { SETERR(3); return 0xFFFFFFFFu; }   // ERROR_PATH_NOT_FOUND
     int fl = 0;
     if ((access & 0x40000000u) && (access & 0x80000000u)) fl = O_RDWR;
     else if (access & 0x40000000u) fl = O_WRONLY;
@@ -136,20 +169,24 @@ SHIM(SetFilePointerEx) {
 }
 SHIM(SetEndOfFile) { FileObj *f = fobj(ARG(c, 0)); RET(c, f && ftruncate(f->fd, lseek(f->fd, 0, SEEK_CUR)) == 0, 1); }
 SHIM(FlushFileBuffers) { RET(c, 1, 1); }
-SHIM(DeleteFileA) { char p[1024]; host_path(GSTR(ARG(c, 0)), p, sizeof p); RET(c, unlink(p) == 0, 1); }
-SHIM(MoveFileA) { char a[1024], b[1024]; host_path(GSTR(ARG(c, 0)), a, sizeof a); host_path(GSTR(ARG(c, 1)), b, sizeof b); RET(c, rename(a, b) == 0, 2); }
+SHIM(DeleteFileA) { char p[1024]; RET(c, host_path(GSTR(ARG(c, 0)), p, sizeof p) && unlink(p) == 0, 1); }
+SHIM(MoveFileA) {
+    char a[1024], b[1024];
+    RET(c, host_path(GSTR(ARG(c, 0)), a, sizeof a) && host_path(GSTR(ARG(c, 1)), b, sizeof b) && rename(a, b) == 0, 2);
+}
 SHIM(CopyFileA) {
-    char a[1024], b[1024]; host_path(GSTR(ARG(c, 0)), a, sizeof a); host_path(GSTR(ARG(c, 1)), b, sizeof b);
+    char a[1024], b[1024];
+    if (!host_path(GSTR(ARG(c, 0)), a, sizeof a) || !host_path(GSTR(ARG(c, 1)), b, sizeof b)) { SETERR(3); RET(c, 0, 3); return; }
     FILE *in = fopen(a, "rb"), *out = in ? fopen(b, "wb") : NULL; int ok = in && out;
     char buf[65536]; size_t n;
     while (ok && (n = fread(buf, 1, sizeof buf, in)) > 0) fwrite(buf, 1, n, out);
     if (in) fclose(in); if (out) fclose(out);
     RET(c, ok, 3);
 }
-SHIM(CreateDirectoryA) { char p[1024]; host_path(GSTR(ARG(c, 0)), p, sizeof p); int r = mkdir(p, 0755); RET(c, r == 0, 2); }
+SHIM(CreateDirectoryA) { char p[1024]; RET(c, host_path(GSTR(ARG(c, 0)), p, sizeof p) && mkdir(p, 0755) == 0, 2); }
 SHIM(GetFileAttributesA) {
-    char p[1024]; host_path(GSTR(ARG(c, 0)), p, sizeof p); struct stat st;
-    if (stat(p, &st)) { SETERR(2); RET(c, 0xFFFFFFFFu, 1); return; }
+    char p[1024]; struct stat st;
+    if (!host_path(GSTR(ARG(c, 0)), p, sizeof p) || stat(p, &st)) { SETERR(2); RET(c, 0xFFFFFFFFu, 1); return; }
     RET(c, S_ISDIR(st.st_mode) ? 0x10 : 0x80, 1);
 }
 SHIM(GetCurrentDirectoryA) {
@@ -192,10 +229,11 @@ static int find_fill(FindObj *f, uint32_t out) {
     return 0;
 }
 SHIM(FindFirstFileA) {
-    char p[1024]; host_path(GSTR(ARG(c, 0)), p, sizeof p);
+    char p[1024];
+    if (!host_path(GSTR(ARG(c, 0)), p, sizeof p)) { SETERR(3); RET(c, 0xFFFFFFFFu, 2); return; }
     FindObj *f = calloc(1, sizeof *f);
-    char *slash = strrchr(p, '/');
-    if (slash) { *slash = 0; snprintf(f->dir, sizeof f->dir, "%s", p[0] ? p : "/"); snprintf(f->pat, sizeof f->pat, "%s", slash + 1); }
+    char *slash = strrchr(p, '/');     // host_path never returns a leading '/'
+    if (slash) { *slash = 0; snprintf(f->dir, sizeof f->dir, "%s", p); snprintf(f->pat, sizeof f->pat, "%s", slash + 1); }
     else { snprintf(f->dir, sizeof f->dir, "."); snprintf(f->pat, sizeof f->pat, "%s", p); }
     f->d = opendir(f->dir);
     if (!f->d || !find_fill(f, ARG(c, 1))) {
@@ -214,7 +252,7 @@ SHIM(FindClose) { FindObj *f = handle_get(ARG(c, 0), H_FIND); if (f) { closedir(
 
 // ---- INI profile functions (Fallout.ini & friends) -------------------------------------------
 static int ini_get(const char *file, const char *sec, const char *key, char *out, size_t n) {
-    char p[1024]; host_path(file, p, sizeof p);
+    char p[1024]; if (!host_path(file, p, sizeof p)) return 0;
     FILE *f = fopen(p, "r"); if (!f) return 0;
     char line[2048], cur[256] = ""; int found = 0;
     while (fgets(line, sizeof line, f)) {
@@ -254,7 +292,7 @@ SHIM(GetPrivateProfileIntA) {
 // A NULL key deletes the section, a NULL value deletes the key (Windows semantics).
 SHIM(WritePrivateProfileStringA) {
     const char *sec = GSTR(ARG(c, 0)), *key = GSTR(ARG(c, 1)), *val = GSTR(ARG(c, 2)), *file = GSTR(ARG(c, 3));
-    char p[1024]; host_path(file, p, sizeof p);
+    char p[1024]; if (!sec || !host_path(file, p, sizeof p)) { RET(c, 0, 4); return; }
     FILE *f = fopen(p, "r");
     size_t cap = 1 << 16, len = 0; char *out = malloc(cap); out[0] = 0;
 #define APPEND(str) do { size_t l_ = strlen(str); while (len + l_ + 1 > cap) { cap *= 2; out = realloc(out, cap); } memcpy(out + len, str, l_ + 1); len += l_; } while (0)

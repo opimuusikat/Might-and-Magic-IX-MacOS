@@ -169,7 +169,7 @@ SHIM(GetTempFileNameA) {
     char out[600]; size_t dl = strlen(dir);
     snprintf(out, sizeof out, "%s%s%.3s%X.tmp", dir, dl && dir[dl - 1] == '\\' ? "" : "\\", pre ? pre : "", u);
     strcpy((char *)MEM + buf, out);
-    if (!uniq) { char p[1024]; host_path(out, p, sizeof p); FILE *f = fopen(p, "wb"); if (f) fclose(f); }
+    if (!uniq) { char p[1024]; FILE *f = host_path(out, p, sizeof p) ? fopen(p, "wb") : NULL; if (f) fclose(f); }
     RET(c, u, 4);
 }
 
