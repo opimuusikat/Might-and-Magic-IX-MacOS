@@ -21,6 +21,10 @@
 //        texture when one exists for the texture's content hash (any size; PNG gets generated mips, DDS DXT1/3/5
 //        or BGRA8 uses the file's mips). Alpha: a no-alpha original (565, XRGB*) stays opaque; for colour-keyed
 //        originals the replacement's alpha 0 is the key. Dynamic textures are never replaced.
+//      Settings overlay: Cmd+, (app menu "Settings...") opens a panel over the picture (overlay.m): Up/Down select,
+//        Left/Right change (live, saved to the defaults), Esc/Return close. While open, keys and the mouse do not
+//        reach the game. M1_SCRIPT_MS command `o` toggles it; scripted k (key down) then drives it.
+//        M1_NO_PERSIST=1 keeps setting changes out of the defaults (tests).
 // Image quality (each also a defaults key in local.mm9-native; the env var wins, then the key, then the default):
 //      M1_SCALE=1..4|auto (key RenderScale, 0 = auto): internal render scale. Back buffer, depth and drawable
 //        are W*S x H*S; vertex coordinates stay 800x600 (the `size` uniform), so 3D and 2D scale together. The game
@@ -76,10 +80,12 @@ static int pending_clear = 3; static uint32_t clear_color; static float clear_z 
 static uint64_t frames;
 static int ready;
 static int SC = 1, MS = 1, ANI = 1, TRI = 0;    // render scale, MSAA samples, anisotropy, trilinear (fixed per run)
+static int SCREQ;                                  // render scale as set (0 = auto)
 static uint32_t BW, BH;                            // internal back buffer size = W*SC x H*SC
 static id<MTLTexture> ms_col, ms_depth;            // multisample colour/depth (MS > 1); bb is then the resolve target
 static id<MTLTexture> rb_tex;                      // W x H BGRA8 for the readback downsample
-static id<MTLRenderPipelineState> down_pso;
+static id<MTLRenderPipelineState> down_pso, ov_pso;
+static id<MTLTexture> ov_tex; static int ov_ver = -1, ov_sc;
 static uint64_t rt_gen = 1;               // bumped by everything that changes the back buffer (see gpu_readback)
 
 static void lk_init(void) { pthread_mutexattr_t a; pthread_mutexattr_init(&a); pthread_mutexattr_settype(&a, PTHREAD_MUTEX_RECURSIVE); pthread_mutex_init(&lk, &a); }
@@ -146,7 +152,12 @@ static const char *msl =
 "fragment float4 dfs(DOut in [[stage_in]], texture2d<float> src [[texture(0)]], constant int &sc [[buffer(0)]]) {\n"
 "  uint2 b = uint2(in.pos.xy) * uint(sc); float4 sum = 0;\n"
 "  for (int j = 0; j < sc; j++) for (int i = 0; i < sc; i++) sum += src.read(b + uint2(i, j));\n"
-"  return sum / float(sc * sc); }\n";
+"  return sum / float(sc * sc); }\n"
+// settings overlay panel: textured quad (premultiplied BGRA), rect = left, top, right, bottom in NDC
+"struct OOut { float4 pos [[position]]; float2 uv; };\n"
+"vertex OOut ovs(uint vid [[vertex_id]], constant float4 &r [[buffer(0)]]) {\n"
+"  float2 p = float2(vid & 1, vid >> 1); OOut o; o.pos = float4(mix(r.x, r.z, p.x), mix(r.y, r.w, p.y), 0.0, 1.0); o.uv = p; return o; }\n"
+"fragment float4 ofs(OOut in [[stage_in]], texture2d<float> t [[texture(0)]], sampler s [[sampler(0)]]) { return t.sample(s, in.uv); }\n";
 
 // ---- window ----------------------------------------------------------------------------------------
 // Native fullscreen (green button, Ctrl+Cmd+F or the Window menu): the 800x600 back buffer is scaled
@@ -174,6 +185,7 @@ static void save_fs(int on) {
 - (void)windowDidEnterFullScreen:(NSNotification *)n { (void)n; fprintf(stderr, "[metal] fullscreen\n"); if (start_fs) start_fs = 0; else save_fs(1); }
 - (void)windowDidExitFullScreen:(NSNotification *)n { (void)n; fprintf(stderr, "[metal] windowed\n"); save_fs(0); }
 - (void)quit:(id)sender { (void)sender; host_request_quit(); }
+- (void)settings:(id)sender { (void)sender; overlay_toggle(); }
 @end
 static M1WinDelegate *wdel;
 // Host frame-rate setting: M1_MAXFPS env, else CFPreferences key MaxFPS (integer) in PREF_DOMAIN; 0 = uncapped.
@@ -206,6 +218,8 @@ static void make_menus(void) {
     NSMenuItem *ai = [NSMenuItem new], *wi = [NSMenuItem new];
     [bar addItem:ai]; [bar addItem:wi]; ai.submenu = app; wi.submenu = win;
     [app addItemWithTitle:@"Hide Might and Magic IX" action:@selector(hide:) keyEquivalent:@"h"];
+    NSMenuItem *st = [app addItemWithTitle:@"Settings\u2026" action:@selector(settings:) keyEquivalent:@","];
+    st.target = wdel;
     [app addItem:[NSMenuItem separatorItem]];
     NSMenuItem *q = [app addItemWithTitle:@"Quit Might and Magic IX" action:@selector(quit:) keyEquivalent:@"q"];
     q.target = wdel;
@@ -215,6 +229,24 @@ static void make_menus(void) {
     NSApp.mainMenu = bar; NSApp.windowsMenu = win;
 }
 
+// Scale 0 = auto: backing pixel height of the main screen / H (1 offscreen); keep = value to use when auto cannot be resolved here.
+static int resolve_scale(int req, uint32_t h, int keep) {
+    int sc = req;
+    if (sc <= 0) {
+        sc = 1;
+        if (!getenv("M1_OFFSCREEN")) {
+            if ([NSThread isMainThread]) { NSScreen *scr = [NSScreen mainScreen]; if (scr) sc = (int)ceil(scr.frame.size.height * scr.backingScaleFactor / h); }
+            else sc = keep;
+        }
+    }
+    return sc < 1 ? 1 : sc > 4 ? 4 : sc;
+}
+static int resolve_msaa(int m) {
+    m = m >= 8 ? 8 : m >= 4 ? 4 : m >= 2 ? 2 : 1;
+    while (m > 1 && ![mdev supportsTextureSampleCount:(NSUInteger)m]) m /= 2;
+    return m;
+}
+static void make_targets(void);
 void gpu_init(uint32_t w, uint32_t h, int rt) {
     if (!gpu_on()) return;
     LOCK
@@ -236,18 +268,9 @@ void gpu_init(uint32_t w, uint32_t h, int rt) {
         vdesc.layouts[0].stride = sizeof(GV);
         for (int i = 0; i < 3; i++) ring[i] = [mdev newBufferWithLength:RING options:MTLResourceStorageModeShared | MTLResourceCPUCacheModeWriteCombined];
         inflight = dispatch_semaphore_create(3);
-        SC = setting_int("M1_SCALE", CFSTR("RenderScale"), 1);
-        if (SC <= 0) {                                   // auto: backing pixel height of the main screen / H
-            SC = 1;
-            if (!getenv("M1_OFFSCREEN") && [NSThread isMainThread]) {
-                NSScreen *scr = [NSScreen mainScreen];
-                if (scr) SC = (int)ceil(scr.frame.size.height * scr.backingScaleFactor / h);
-            }
-        }
-        SC = SC < 1 ? 1 : SC > 4 ? 4 : SC;
-        MS = setting_int("M1_MSAA", CFSTR("MSAA"), 1);
-        MS = MS >= 8 ? 8 : MS >= 4 ? 4 : MS >= 2 ? 2 : 1;
-        while (MS > 1 && ![mdev supportsTextureSampleCount:(NSUInteger)MS]) MS /= 2;
+        SCREQ = setting_int("M1_SCALE", CFSTR("RenderScale"), 1);
+        SC = resolve_scale(SCREQ, h, 1);
+        MS = resolve_msaa(setting_int("M1_MSAA", CFSTR("MSAA"), 1));
         ANI = setting_int("M1_ANISO", CFSTR("Anisotropy"), 1); ANI = ANI < 1 ? 1 : ANI > 16 ? 16 : ANI;
         TRI = setting_int("M1_TRILINEAR", CFSTR("Trilinear"), 0) != 0;
         fprintf(stderr, "[metal] render scale %d, MSAA %d, aniso %d, trilinear %d\n", SC, MS, ANI, TRI);
@@ -255,34 +278,20 @@ void gpu_init(uint32_t w, uint32_t h, int rt) {
         dd.vertexFunction = [lib newFunctionWithName:@"dvs"]; dd.fragmentFunction = [lib newFunctionWithName:@"dfs"];
         dd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
         down_pso = [mdev newRenderPipelineStateWithDescriptor:dd error:&err];
+        MTLRenderPipelineDescriptor *od = [MTLRenderPipelineDescriptor new];
+        od.vertexFunction = [lib newFunctionWithName:@"ovs"]; od.fragmentFunction = [lib newFunctionWithName:@"ofs"];
+        od.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm; od.colorAttachments[0].blendingEnabled = YES;
+        od.colorAttachments[0].sourceRGBBlendFactor = od.colorAttachments[0].sourceAlphaBlendFactor = MTLBlendFactorOne;
+        od.colorAttachments[0].destinationRGBBlendFactor = od.colorAttachments[0].destinationAlphaBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
+        ov_pso = [mdev newRenderPipelineStateWithDescriptor:od error:&err];
+        if (!ov_pso) fprintf(stderr, "[metal] overlay pipeline failed: %s\n", err.localizedDescription.UTF8String);
         if (!down_pso) { fprintf(stderr, "[metal] downsample pipeline failed: %s\n", err.localizedDescription.UTF8String); abort(); }
         texs = [NSMutableArray array];
         MTLTextureDescriptor *wd = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm width:1 height:1 mipmapped:NO];
         white = [mdev newTextureWithDescriptor:wd];
         uint32_t px = 0xFFFFFFFFu; [white replaceRegion:MTLRegionMake2D(0, 0, 1, 1) mipmapLevel:0 withBytes:&px bytesPerRow:4];
     }
-    BW = w * (uint32_t)SC; BH = h * (uint32_t)SC;
-    MTLTextureDescriptor *d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm width:BW height:BH mipmapped:NO];
-    d.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead; d.storageMode = MTLStorageModePrivate;
-    bb = [mdev newTextureWithDescriptor:d];
-    d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatDepth32Float width:BW height:BH mipmapped:NO];
-    d.usage = MTLTextureUsageRenderTarget; d.storageMode = MTLStorageModePrivate;
-    depth = [mdev newTextureWithDescriptor:d];
-    ms_col = ms_depth = nil;
-    if (MS > 1) {
-        d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm width:BW height:BH mipmapped:NO];
-        d.textureType = MTLTextureType2DMultisample; d.sampleCount = (NSUInteger)MS;
-        d.usage = MTLTextureUsageRenderTarget; d.storageMode = MTLStorageModePrivate;
-        ms_col = [mdev newTextureWithDescriptor:d];
-        d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatDepth32Float width:BW height:BH mipmapped:NO];
-        d.textureType = MTLTextureType2DMultisample; d.sampleCount = (NSUInteger)MS;
-        d.usage = MTLTextureUsageRenderTarget; d.storageMode = MTLStorageModePrivate;
-        ms_depth = [mdev newTextureWithDescriptor:d];
-    }
-    d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm width:w height:h mipmapped:NO];
-    d.usage = MTLTextureUsageRenderTarget; d.storageMode = MTLStorageModePrivate;
-    rb_tex = [mdev newTextureWithDescriptor:d];
-    pending_clear = 3; clear_color = 0; clear_z = 1.0f; rt_gen++;
+    make_targets();
     if (!getenv("M1_OFFSCREEN") && !layer) {
         if (![NSThread isMainThread]) fprintf(stderr, "[metal] gpu_init off the main thread: no window\n");
         else {
@@ -323,6 +332,33 @@ void gpu_init(uint32_t w, uint32_t h, int rt) {
     fprintf(stderr, "[metal] %s, back buffer %ux%u (internal %ux%u)%s\n", mdev.name.UTF8String, w, h, BW, BH, layer ? ", window" : ", offscreen");
     ready = 1;
     UNLOCK
+}
+
+static void make_targets(void) {
+    uint32_t w = W, h = H;
+    BW = w * (uint32_t)SC; BH = h * (uint32_t)SC;
+    MTLTextureDescriptor *d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm width:BW height:BH mipmapped:NO];
+    d.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead; d.storageMode = MTLStorageModePrivate;
+    bb = [mdev newTextureWithDescriptor:d];
+    d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatDepth32Float width:BW height:BH mipmapped:NO];
+    d.usage = MTLTextureUsageRenderTarget; d.storageMode = MTLStorageModePrivate;
+    depth = [mdev newTextureWithDescriptor:d];
+    ms_col = ms_depth = nil;
+    if (MS > 1) {
+        d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm width:BW height:BH mipmapped:NO];
+        d.textureType = MTLTextureType2DMultisample; d.sampleCount = (NSUInteger)MS;
+        d.usage = MTLTextureUsageRenderTarget; d.storageMode = MTLStorageModePrivate;
+        ms_col = [mdev newTextureWithDescriptor:d];
+        d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatDepth32Float width:BW height:BH mipmapped:NO];
+        d.textureType = MTLTextureType2DMultisample; d.sampleCount = (NSUInteger)MS;
+        d.usage = MTLTextureUsageRenderTarget; d.storageMode = MTLStorageModePrivate;
+        ms_depth = [mdev newTextureWithDescriptor:d];
+    }
+    d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm width:w height:h mipmapped:NO];
+    d.usage = MTLTextureUsageRenderTarget; d.storageMode = MTLStorageModePrivate;
+    rb_tex = [mdev newTextureWithDescriptor:d];
+    pending_clear = 3; clear_color = 0; clear_z = 1.0f; rt_gen++;
+    if (layer) layer.drawableSize = CGSizeMake(BW, BH);
 }
 
 // ---- passes ----------------------------------------------------------------------------------------
@@ -785,6 +821,7 @@ void gpu_blit(int src, int sx0, int sy0, int sx1, int sy1, int dx0, int dy0, int
     MTLSamplerDescriptor *sd = [MTLSamplerDescriptor new];
     static id<MTLSamplerState> point; if (!point) point = [mdev newSamplerStateWithDescriptor:sd];
     [enc setFragmentSamplerState:point atIndex:0]; ec.s0 = nil;
+    [enc setFragmentTexture:white atIndex:1]; [enc setFragmentSamplerState:point atIndex:1]; ec.t1 = nil; ec.s1 = nil;   // fs reads index 1 in every draw
     [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:ring_off / sizeof(GV) vertexCount:6];
     ring_off += 6 * sizeof(GV);
     rt_gen++;
@@ -856,12 +893,14 @@ static int in_list(const char *env, char *list, size_t n, int *init, uint64_t f)
 }
 static int want_dump(uint64_t f) { static char l[1024]; static int i; return in_list("M1_DUMP", l, sizeof l, &i, f); }
 static int want_dump_show(uint64_t f) { static char l[1024]; static int i; return in_list("M1_DUMP_SHOW", l, sizeof l, &i, f); }
+static void overlay_draw(id<MTLCommandBuffer> cb, id<MTLTexture> target);
 static void dump_png(const char *kind, uint64_t frame) {
     MTLTextureDescriptor *d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm width:BW height:BH mipmapped:NO];
-    d.storageMode = MTLStorageModeShared;
+    d.storageMode = MTLStorageModeShared; d.usage = MTLTextureUsageShaderRead | MTLTextureUsageRenderTarget;
     id<MTLTexture> t = [mdev newTextureWithDescriptor:d];
     id<MTLBlitCommandEncoder> b = [cmd blitCommandEncoder];
     [b copyFromTexture:bb toTexture:t]; [b endEncoding];
+    overlay_draw(cmd, t);               // a dump taken while the overlay is open shows it
     [cmd commit]; [cmd waitUntilCompleted]; cmd = [queue commandBuffer];
     size_t bpr = BW * 4;
     uint8_t *px = malloc(bpr * BH);
@@ -880,6 +919,102 @@ static void dump_png(const char *kind, uint64_t frame) {
 // primary surface (gpu_show) does it too: the loading screen is drawn by cshell's loading thread with
 // 2D Blts and copied to the front buffer that way, without Flip. Shows are not counted as frames;
 // M1_DUMP_SHOW=<n,...> dumps the n-th one as m1_show_<n>.png.
+// ---- runtime settings ----------------------------------------------------------------------------------
+// gpu_settings_* store a request under LOCK; present() applies it after the frame is committed (no encoder or command
+// buffer open). Scale/MSAA change recreates the render targets and flushes the pipeline cache (the back buffer content
+// is lost for one frame); aniso/trilinear flush the sampler cache; texture replace/dump re-resolve every texture.
+static struct { int has, scale, msaa, aniso, tri, rep, dump; } req;
+static void persist_int(CFStringRef key, int v) {
+    if (getenv("M1_NO_PERSIST")) return;
+    CFNumberRef n = CFNumberCreate(NULL, kCFNumberIntType, &v);
+    CFPreferencesSetAppValue(key, n, PREF_DOMAIN); CFRelease(n);
+    CFPreferencesAppSynchronize(PREF_DOMAIN);
+}
+static void persist_bool(CFStringRef key, int v) {
+    if (getenv("M1_NO_PERSIST")) return;
+    CFPreferencesSetAppValue(key, v ? kCFBooleanTrue : kCFBooleanFalse, PREF_DOMAIN);
+    CFPreferencesAppSynchronize(PREF_DOMAIN);
+}
+static void req_fill(void) {      // start a pending request from the current values
+    if (req.has) return;
+    req.has = 1; req.scale = SCREQ; req.msaa = MS; req.aniso = ANI; req.tri = TRI; req.rep = texpack_replace_on(); req.dump = texpack_dump_on();
+}
+void gpu_settings_request(int scale, int msaa, int aniso, int tri, int texreplace, int texdump) {
+    if (!gpu_on()) return;
+    LOCK
+    req.has = 1; req.scale = scale; req.msaa = msaa; req.aniso = aniso; req.tri = tri; req.rep = texreplace; req.dump = texdump;
+    UNLOCK
+}
+void gpu_settings_set_one(int what, int value) {
+    if (!gpu_on()) return;
+    LOCK
+    req_fill();
+    switch (what) { case 1: req.scale = value; break; case 2: req.msaa = value; break; case 3: req.aniso = value; break;
+    case 4: req.tri = value; break; case 5: req.rep = value; break; case 6: req.dump = value; break; }
+    UNLOCK
+}
+void gpu_settings_get(int *scale, int *msaa, int *aniso, int *tri, int *texreplace, int *texdump, int *scale_effective) {
+    if (!gpu_on()) { if (scale) *scale = 1; if (msaa) *msaa = 1; if (aniso) *aniso = 1; if (tri) *tri = 0; if (texreplace) *texreplace = 0; if (texdump) *texdump = 0; if (scale_effective) *scale_effective = 1; return; }
+    LOCK
+    if (scale) *scale = SCREQ; if (scale_effective) *scale_effective = SC;
+    if (msaa) *msaa = MS; if (aniso) *aniso = ANI; if (tri) *tri = TRI;
+    if (texreplace) *texreplace = texpack_replace_on(); if (texdump) *texdump = texpack_dump_on();
+    UNLOCK
+}
+void host_maxfps_set(int fps) { persist_int(CFSTR("MaxFPS"), fps < 0 ? 0 : fps); }
+static void apply_settings(void) {
+    if (!req.has) return;
+    req.has = 0;
+    int nsc = resolve_scale(req.scale, H, SC), nms = resolve_msaa(req.msaa);
+    int nani = req.aniso < 1 ? 1 : req.aniso > 16 ? 16 : req.aniso, ntri = req.tri != 0, nrep = req.rep != 0, ndump = req.dump != 0;
+    int ch_t = nsc != SC || nms != MS, ch_s = nani != ANI || ntri != TRI;
+    int ch_r = nrep != (texpack_replace_on() != 0), ch_d = ndump != (texpack_dump_on() != 0);
+    int ch_req = req.scale != SCREQ;
+    if (!ch_t && !ch_s && !ch_r && !ch_d && !ch_req) return;
+    if (ch_req) { SCREQ = req.scale; persist_int(CFSTR("RenderScale"), SCREQ); }
+    if (nms != MS) persist_int(CFSTR("MSAA"), nms);
+    if (nani != ANI) persist_int(CFSTR("Anisotropy"), nani);
+    if (ntri != TRI) persist_int(CFSTR("Trilinear"), ntri);
+    if (ch_t) { SC = nsc; MS = nms; make_targets(); memset(pso, 0, sizeof pso); }
+    if (ch_s) { ANI = nani; TRI = ntri; memset(samp, 0, sizeof samp); }
+    if (ch_r || ch_d) {
+        for (NSNumber *k in [rhash allKeys]) rep_unbind(k.intValue);      // before replace goes off: release needs it on
+        if (ch_r) { texpack_set_replace(nrep); persist_bool(CFSTR("TextureReplace"), nrep); }
+        if (ch_d) { texpack_set_dump(ndump); persist_bool(CFSTR("TextureDump"), ndump); }
+        [ktex removeAllObjects];
+        for (int i = 0; i < nsf; i++) if (sf[i].alive && sf[i].gpu && sf[i].owner < 0) sf[i].dirty = 1;   // re-hash / re-upload on next bind
+    }
+    fprintf(stderr, "[metal] settings applied: scale %d (%ux%u), MSAA %d, aniso %d, tri %d, replace %d, dump %d\n", SC, BW, BH, MS, ANI, TRI, texpack_replace_on() != 0, texpack_dump_on() != 0);
+}
+int gpu_msaa_ok(int n) { return n <= 1 || (mdev && [mdev supportsTextureSampleCount:(NSUInteger)n]); }
+// Settings overlay: a second pass over the presented image (or over a dump copy), never into the back buffer.
+static void overlay_draw(id<MTLCommandBuffer> cb, id<MTLTexture> target) {
+    if (!overlay_is_open() || !ov_pso || !cb) return;
+    int ver = overlay_version();
+    if (!ov_tex || ov_ver != ver || ov_sc != SC) {
+        uint8_t *px = overlay_render(SC);
+        if (!px) return;
+        int lw, lh; overlay_size(&lw, &lh);
+        MTLTextureDescriptor *d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm width:(NSUInteger)lw * SC height:(NSUInteger)lh * SC mipmapped:NO];
+        d.usage = MTLTextureUsageShaderRead; d.storageMode = MTLStorageModeShared;
+        ov_tex = [mdev newTextureWithDescriptor:d];
+        [ov_tex replaceRegion:MTLRegionMake2D(0, 0, ov_tex.width, ov_tex.height) mipmapLevel:0 withBytes:px bytesPerRow:ov_tex.width * 4];
+        free(px); ov_ver = ver; ov_sc = SC;
+    }
+    MTLRenderPassDescriptor *rp = [MTLRenderPassDescriptor renderPassDescriptor];
+    rp.colorAttachments[0].texture = target; rp.colorAttachments[0].loadAction = MTLLoadActionLoad; rp.colorAttachments[0].storeAction = MTLStoreActionStore;
+    id<MTLRenderCommandEncoder> re = [cb renderCommandEncoderWithDescriptor:rp];
+    float tw = (float)target.width, th = (float)target.height, pw = (float)ov_tex.width, ph = (float)ov_tex.height;
+    float x0 = (tw - pw) / 2, y0 = (th - ph) / 2;
+    float r[4] = {x0 / tw * 2 - 1, 1 - y0 / th * 2, (x0 + pw) / tw * 2 - 1, 1 - (y0 + ph) / th * 2};
+    MTLSamplerDescriptor *sd = [MTLSamplerDescriptor new]; sd.minFilter = sd.magFilter = MTLSamplerMinMagFilterLinear;
+    sd.sAddressMode = sd.tAddressMode = MTLSamplerAddressModeClampToEdge;
+    static id<MTLSamplerState> lin; if (!lin) lin = [mdev newSamplerStateWithDescriptor:sd];
+    [re setRenderPipelineState:ov_pso]; [re setVertexBytes:r length:sizeof r atIndex:0];
+    [re setFragmentTexture:ov_tex atIndex:0]; [re setFragmentSamplerState:lin atIndex:0];
+    [re drawPrimitives:MTLPrimitiveTypeTriangleStrip vertexStart:0 vertexCount:4];
+    [re endEncoding];
+}
 static volatile long pending_tdump = -1;
 void gpu_request_dump(unsigned long ms) { pending_tdump = (long)ms; }   // M1_SCRIPT_MS 'p': dumped at the next flip
 static void present(int flip) {
@@ -895,6 +1030,7 @@ static void present(int flip) {
         if (drawable) {
             id<MTLBlitCommandEncoder> b = [cmd blitCommandEncoder];
             [b copyFromTexture:bb toTexture:drawable.texture]; [b endEncoding];
+            overlay_draw(cmd, drawable.texture);
             [cmd presentDrawable:drawable];
         }
         dispatch_semaphore_t sem = inflight;
@@ -903,6 +1039,7 @@ static void present(int flip) {
         cmd = nil;
         dispatch_semaphore_wait(inflight, DISPATCH_TIME_FOREVER);
         ring_i = (ring_i + 1) % 3; ring_off = 0;
+        apply_settings();
     }
 }
 void gpu_present(void) {
@@ -936,15 +1073,25 @@ static const uint8_t mac2dik[128] = {
     [0x75] = 0xD3, [0x76] = 0x3E, [0x77] = 0xCF, [0x78] = 0x3C, [0x79] = 0xD1, [0x7A] = 0x3B, [0x7B] = 0xCB, [0x7C] = 0xCD,
     [0x7D] = 0xD0, [0x7E] = 0xC8,
 };
+// Mouse buttons: while the overlay is open presses are swallowed; a release is forwarded only if its press was.
+static void mouse_btn(int b, int down) {
+    static uint8_t fwd[8];
+    if (b < 0 || b > 7) return;
+    if (down) { if (overlay_is_open()) return; fwd[b] = 1; input_mouse_button(b, 1); }
+    else if (fwd[b]) { fwd[b] = 0; input_mouse_button(b, 0); }
+}
 static void handle_event(NSEvent *e) {
     switch (e.type) {
-    case NSEventTypeKeyDown: case NSEventTypeKeyUp:
-        if (e.keyCode < 128 && !e.isARepeat) input_key(mac2dik[e.keyCode], e.type == NSEventTypeKeyDown);
-        if (e.type == NSEventTypeKeyDown) {
+    case NSEventTypeKeyDown: case NSEventTypeKeyUp: {
+        BOOL kd = e.type == NSEventTypeKeyDown;
+        if (e.keyCode < 128 && overlay_filter_key(mac2dik[e.keyCode], kd, e.isARepeat)) return;     // the settings overlay owns it
+        if (e.keyCode < 128 && !e.isARepeat) input_key(mac2dik[e.keyCode], kd);
+        if (kd) {
             NSString *ch = e.characters;
             for (NSUInteger i = 0; i < ch.length; i++) { unichar u = [ch characterAtIndex:i]; if (u == 0x7F) u = 8; if (u >= 8 && u < 256 && u != 0x1B) host_input_char(u); }
         }
         return;
+    }
     case NSEventTypeFlagsChanged: {
         NSEventModifierFlags f = e.modifierFlags;
         input_key(0x2A, (f & NSEventModifierFlagShift) != 0); input_key(0x1D, (f & NSEventModifierFlagControl) != 0);
@@ -952,14 +1099,15 @@ static void handle_event(NSEvent *e) {
         return;
     }
     case NSEventTypeMouseMoved: case NSEventTypeLeftMouseDragged: case NSEventTypeRightMouseDragged: case NSEventTypeOtherMouseDragged:
+        if (overlay_is_open()) return;
         input_mouse_move((int)lround(e.deltaX), (int)lround(e.deltaY)); return;
-    case NSEventTypeLeftMouseDown: input_mouse_button(0, 1); return;
-    case NSEventTypeLeftMouseUp: input_mouse_button(0, 0); return;
-    case NSEventTypeRightMouseDown: input_mouse_button(1, 1); return;
-    case NSEventTypeRightMouseUp: input_mouse_button(1, 0); return;
-    case NSEventTypeOtherMouseDown: input_mouse_button((int)e.buttonNumber, 1); return;
-    case NSEventTypeOtherMouseUp: input_mouse_button((int)e.buttonNumber, 0); return;
-    case NSEventTypeScrollWheel: input_mouse_wheel((int)lround(e.scrollingDeltaY * 40)); return;
+    case NSEventTypeLeftMouseDown: mouse_btn(0, 1); return;
+    case NSEventTypeLeftMouseUp: mouse_btn(0, 0); return;
+    case NSEventTypeRightMouseDown: mouse_btn(1, 1); return;
+    case NSEventTypeRightMouseUp: mouse_btn(1, 0); return;
+    case NSEventTypeOtherMouseDown: mouse_btn((int)e.buttonNumber, 1); return;
+    case NSEventTypeOtherMouseUp: mouse_btn((int)e.buttonNumber, 0); return;
+    case NSEventTypeScrollWheel: if (overlay_is_open()) return; input_mouse_wheel((int)lround(e.scrollingDeltaY * 40)); return;
     default: return;
     }
 }

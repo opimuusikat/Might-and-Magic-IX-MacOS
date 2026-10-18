@@ -6,6 +6,21 @@ runs exactly as before. The menu frame is byte-identical to the build before the
 
 ## How to switch things on
 
+**In the game:** press **Cmd+,** (or choose *Settings…* in the app menu). A panel over the game picture
+lists the settings:
+- **Select and change:** ↑↓ selects a row, ←→ changes its value, Esc or Return closes the panel.
+- **When changes apply:** resolution, anti-aliasing, filtering and HD textures change immediately. The
+  frame-rate cap applies after a restart.
+- **Saving:** every change is saved in the same defaults keys as below.
+- **Game input:** while the panel is open, the game gets no keyboard or mouse input, and Esc does not reach it.
+- **Screenshots and saves:** the panel is drawn only into the window picture, never into the back buffer,
+  so it cannot appear in save thumbnails.
+- **What was tested:** offscreen with scripted keys, at 1x and 2x, with the Metal debug layer showing no
+  validation errors. The real Cmd+, shortcut, real keyboard and mouse handling in the window, and saving a
+  change have not been tried yet.
+
+Instead of the panel, the settings can be set from the Terminal:
+
 Every setting is a key in the defaults domain `local.mm9-native` (the same one that stores
 `StartFullscreen`). An environment variable with the `M1_` name overrides the key for one start.
 

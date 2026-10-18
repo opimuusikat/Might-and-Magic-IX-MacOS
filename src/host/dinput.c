@@ -158,10 +158,14 @@ void input_mouse_button(int b, int down) {
 //   m,dx,dy mouse move   d,b / u,b mouse button down/up   k,dik / r,dik key down/up   q quit (= window close)
 // M1_TURN_KEY=<DIK> (key goes down at frame M1_TURN_FRAME, default 300) is kept for the gate tests.
 // M1_SCRIPT_MS: same syntax, times in ms since the first presented frame; extra command p = dump the back
-// buffer at the next flip as m1_t<ms>.png. Each entry fires once, at the first poll at or after its time.
+// buffer at the next flip as m1_t<ms>.png; s,<what>,<value> changes an image setting at runtime (what: 1 scale (0 auto),
+// 2 MSAA, 3 aniso, 4 trilinear, 5 texture replace, 6 texture dump; M1_NO_PERSIST=1 keeps it out of the defaults);
+// o toggles the settings overlay, and while it is open scripted k/r keys go to it (Up 200, Down 208, Left 203, Right 205, Esc 1, Return 28). Each entry fires once, at the first poll at or after its time.
 static void test_hooks_ms(void) {
     extern uint64_t host_frames(void);
     extern void gpu_request_dump(unsigned long ms);
+    extern int overlay_filter_key(int dik, int down, int repeat);
+    extern void overlay_toggle(void);
     static int init; static char *script; static uint64_t t0; static unsigned char done[256];
     if (!init) { init = 1; if (getenv("M1_SCRIPT_MS")) script = strdup(getenv("M1_SCRIPT_MS")); }
     if (!script || host_frames() == 0) return;
@@ -180,9 +184,11 @@ static void test_hooks_ms(void) {
             if (cmd == 'm') input_mouse_move(a, b);
             else if (cmd == 'd') input_mouse_button(a, 1);
             else if (cmd == 'u') input_mouse_button(a, 0);
-            else if (cmd == 'k') input_key(a, 1);
-            else if (cmd == 'r') input_key(a, 0);
+            else if (cmd == 'k') { if (!overlay_filter_key(a, 1, 0)) input_key(a, 1); }
+            else if (cmd == 'r') { if (!overlay_filter_key(a, 0, 0)) input_key(a, 0); }
+            else if (cmd == 'o') overlay_toggle();
             else if (cmd == 'p') gpu_request_dump((unsigned long)ms);
+            else if (cmd == 's') { extern void gpu_settings_set_one(int, int); gpu_settings_set_one(a, b); }   // s,<what>,<value>: 1 scale 2 msaa 3 aniso 4 trilinear 5 texreplace 6 texdump
             else if (cmd == 'q') { void host_request_quit(void); host_request_quit(); }
             fprintf(stderr, "[di] script_ms %ld (actual %lld, frame %llu): %c %d %d\n", ms, (long long)(now - t0), (unsigned long long)host_frames(), cmd, a, b);
         }

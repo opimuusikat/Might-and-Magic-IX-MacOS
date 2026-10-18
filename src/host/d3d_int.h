@@ -56,3 +56,20 @@ int  texpack_on_upload(int root, const Surf *s, uint64_t hash, int mips, uint64_
 void texpack_forget(int root);
 void texpack_retain(uint64_t hash);    // refcount of surfaces binding a replacement (cache entry dropped at 0)
 void texpack_release(uint64_t hash);
+void texpack_set_dump(int on);          // runtime switches (first-time init handled)
+void texpack_set_replace(int on);
+int  texpack_dump_on(void);
+// Runtime image settings (metal.m). Requests are applied at the end of the next present (a frame boundary) and persisted
+// to the defaults domain unless M1_NO_PERSIST=1. scale 0 = auto. Resizing loses the back buffer for one frame.
+void gpu_settings_request(int scale, int msaa, int aniso, int tri, int texreplace, int texdump);
+void gpu_settings_set_one(int what, int value);   // 1 scale, 2 msaa, 3 aniso, 4 trilinear, 5 texreplace, 6 texdump
+void gpu_settings_get(int *scale, int *msaa, int *aniso, int *tri, int *texreplace, int *texdump, int *scale_effective);
+int  host_maxfps_setting(void);                   // -1 unset, 0 uncapped
+void host_maxfps_set(int fps);                    // persisted; applies after restart
+// settings overlay (overlay.m)
+int  overlay_is_open(void);
+int  overlay_version(void);
+void overlay_toggle(void);
+int  overlay_filter_key(int dik, int down, int repeat);   // 1 = consumed by the overlay (also swallows the matching key-up)
+void overlay_size(int *w, int *h);
+uint8_t *overlay_render(int scale);                       // BGRA8 premultiplied, caller frees

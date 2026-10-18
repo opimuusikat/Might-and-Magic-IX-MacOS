@@ -28,6 +28,7 @@ enum { F_DXT1, F_DXT3, F_DXT5, F_ARGB8888, F_XRGB8888, F_RGB565, F_ARGB1555, F_X
 static const char *const fmt_name[F_NFMT] = {"DXT1", "DXT3", "DXT5", "ARGB8888", "XRGB8888", "RGB565", "ARGB1555", "XRGB1555", "ARGB4444", "XRGB4444"};
 
 static int dump_on = -1;
+static int rep_on;
 static NSString *dump_dir;
 static dispatch_queue_t q;
 static pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER;
@@ -58,37 +59,52 @@ static void summary(void) {
     fprintf(stderr, "[texpack] %llu textures dumped (%llu written), %llu dynamic skipped\n",
             (unsigned long long)n_dumped, (unsigned long long)n_written, (unsigned long long)n_dyn);
 }
-static int rep_on;
 static NSString *rep_dir;
 static NSMutableDictionary *rep_files, *rep_cache, *rep_opaque, *rep_ref;      // hash -> path; hash -> texture or NSNull (load failed); opaque views; refcounts
+static int dump_atexit;
+static void setup_dump(void) {
+    NSString *base = dir_setting();
+    dump_dir = [base stringByAppendingPathComponent:@"dump"];
+    [[NSFileManager defaultManager] createDirectoryAtPath:dump_dir withIntermediateDirectories:YES attributes:nil error:nil];
+    if (!q) q = dispatch_queue_create("texpack", DISPATCH_QUEUE_SERIAL);
+    if (!seen) { seen_cap = 1 << 14; seen = calloc(seen_cap, 8); }
+    fprintf(stderr, "[texpack] dump on -> %s\n", dump_dir.fileSystemRepresentation);
+    if (!dump_atexit) { dump_atexit = 1; atexit(summary); }
+}
+static void setup_replace(void) {       // (re)scans <TextureDir>/replace
+    NSString *base = dir_setting();
+    rep_dir = [base stringByAppendingPathComponent:@"replace"];
+    if (!rep_files) { rep_cache = [NSMutableDictionary dictionary]; rep_opaque = [NSMutableDictionary dictionary]; rep_ref = [NSMutableDictionary dictionary]; }
+    rep_files = [NSMutableDictionary dictionary];
+    for (NSString *n in [[NSFileManager defaultManager] contentsOfDirectoryAtPath:rep_dir error:nil]) {
+        NSString *ext = n.pathExtension.lowercaseString, *b = n.stringByDeletingPathExtension;
+        if (b.length != 16 || !([ext isEqualToString:@"png"] || [ext isEqualToString:@"dds"])) continue;
+        unsigned long long h = 0; if (sscanf(b.UTF8String, "%16llx", &h) != 1 || !h) continue;
+        NSNumber *k = @(h);
+        if (rep_files[k] && [ext isEqualToString:@"png"]) continue;     // .dds wins over .png
+        rep_files[k] = [rep_dir stringByAppendingPathComponent:n];
+    }
+    fprintf(stderr, "[texpack] replace: %lu files (%s)\n", (unsigned long)rep_files.count, rep_dir.fileSystemRepresentation);
+}
 void texpack_init(void) {
     if (dump_on >= 0) return;
     dump_on = cf_bool_or_env("M1_TEXDUMP", CFSTR("TextureDump"));
     rep_on = cf_bool_or_env("M1_TEXREPLACE", CFSTR("TextureReplace"));
-    if (!dump_on && !rep_on) return;
-    NSString *base = dir_setting();
-    if (dump_on) {
-        dump_dir = [base stringByAppendingPathComponent:@"dump"];
-        [[NSFileManager defaultManager] createDirectoryAtPath:dump_dir withIntermediateDirectories:YES attributes:nil error:nil];
-        q = dispatch_queue_create("texpack", DISPATCH_QUEUE_SERIAL);
-        seen_cap = 1 << 14; seen = calloc(seen_cap, 8);
-        fprintf(stderr, "[texpack] dump on -> %s\n", dump_dir.fileSystemRepresentation);
-        atexit(summary);
-    }
-    if (rep_on) {
-        rep_dir = [base stringByAppendingPathComponent:@"replace"];
-        rep_files = [NSMutableDictionary dictionary]; rep_cache = [NSMutableDictionary dictionary]; rep_opaque = [NSMutableDictionary dictionary]; rep_ref = [NSMutableDictionary dictionary];
-        for (NSString *n in [[NSFileManager defaultManager] contentsOfDirectoryAtPath:rep_dir error:nil]) {
-            NSString *ext = n.pathExtension.lowercaseString, *b = n.stringByDeletingPathExtension;
-            if (b.length != 16 || !([ext isEqualToString:@"png"] || [ext isEqualToString:@"dds"])) continue;
-            unsigned long long h = 0; if (sscanf(b.UTF8String, "%16llx", &h) != 1 || !h) continue;
-            NSNumber *k = @(h);
-            if (rep_files[k] && [ext isEqualToString:@"png"]) continue;     // .dds wins over .png
-            rep_files[k] = [rep_dir stringByAppendingPathComponent:n];
-        }
-        fprintf(stderr, "[texpack] replace: %lu files (%s)\n", (unsigned long)rep_files.count, rep_dir.fileSystemRepresentation);
-    }
+    if (dump_on) setup_dump();
+    if (rep_on) setup_replace();
 }
+// Runtime switches (called under the Metal lock at a frame boundary). Safe to call before the first upload.
+void texpack_set_dump(int on) {
+    texpack_init(); on = on != 0;
+    if (on == (dump_on > 0)) return;
+    dump_on = on; if (on) setup_dump(); else if (q) dispatch_sync(q, ^{});
+}
+void texpack_set_replace(int on) {
+    texpack_init(); on = on != 0;
+    if (on == (rep_on != 0)) return;
+    rep_on = on; if (on) setup_replace();
+}
+int texpack_dump_on(void) { texpack_init(); return dump_on > 0; }
 int texpack_on(void) { if (dump_on < 0) texpack_init(); return dump_on > 0 || rep_on; }
 int texpack_replace_on(void) { return rep_on; }
 
