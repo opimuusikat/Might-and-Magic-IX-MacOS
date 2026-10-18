@@ -6,6 +6,7 @@
 #include <sys/stat.h>
 #include <sys/time.h>
 #include <time.h>
+#include <strings.h>
 #include <unistd.h>
 #include "shims.h"
 
@@ -20,6 +21,24 @@ void host_init_args(int argc, char **argv) {
         strncat(saved_cmdline, " ", sizeof saved_cmdline - strlen(saved_cmdline) - 1);
         strncat(saved_cmdline, argv[i], sizeof saved_cmdline - strlen(saved_cmdline) - 1);
     }
+    // Frame-rate setting (env M1_MAXFPS, else defaults key MaxFPS; 0 = uncapped). An explicit +MaxFPS in argv wins.
+    extern int host_maxfps_setting(void);
+    int mf = host_maxfps_setting(), explicit_mf = 0;
+    for (int i = 0; i < argc; i++) if (!strcasecmp(argv[i], "+MaxFPS")) explicit_mf = 1;
+    // Above ~120 fps the engine's world clock (time of day) runs fast: it advances at least ~1/120 s per
+    // frame (measured: uncapped 6:00 -> 6:37 in 10 s, 120 fps -> 6:05 like 60 fps). Movement is unaffected.
+    // So the setting is clamped to 1..120 (0 = uncapped becomes 120); M1_MAXFPS_FORCE=1 skips the clamp (benchmarks).
+    if ((mf == 0 || mf > 120) && !getenv("M1_MAXFPS_FORCE")) {
+        fprintf(stderr, "[host] MaxFPS %d clamped to 120 (the game's clock runs fast above 120 fps)\n", mf);
+        mf = 120;
+    }
+    if (mf >= 0 && !explicit_mf) {
+        char t[32]; snprintf(t, sizeof t, " +MaxFPS %d", mf);
+        strncat(saved_cmdline, t, sizeof saved_cmdline - strlen(saved_cmdline) - 1);
+        fprintf(stderr, "[host] MaxFPS override %d\n", mf);
+    } else if (mf >= 0) fprintf(stderr, "[host] MaxFPS setting %d ignored: +MaxFPS given on the command line\n", mf);
+    else fprintf(stderr, "[host] MaxFPS: no override (autoexec.cfg value applies)\n");
+    fprintf(stderr, "[host] VSync %s (M1_NOVSYNC=1 disables)\n", getenv("M1_NOVSYNC") ? "off" : "on");
     fprintf(stderr, "[host] command line: %s\n", saved_cmdline);
 }
 

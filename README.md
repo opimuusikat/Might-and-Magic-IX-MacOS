@@ -153,8 +153,9 @@ emulator, 8,774 of 8,816 testable entry points (99.5 %) match the original exact
 
 Not done yet:
 - **Long play sessions:** not tested.
-- **Rendering:** three Direct3D details are not handled: the colour-key render state, cull mode,
-  and back buffer → primary Blts.
+- **Optional extras** (higher internal resolution, MSAA, better texture filtering, up to 120 fps, HD
+  texture packs) are built in but off by default and only tested offscreen so far; see
+  [docs/ENHANCEMENTS.md](docs/ENHANCEMENTS.md).
 - **Intel Macs:** the builder refuses to run on them. For Intel Macs, use the Wine version of the
   game.
 

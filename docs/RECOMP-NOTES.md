@@ -992,3 +992,16 @@ made the engine find `clientfx.fxd` there and load it a second time. Refusing it
 **Not covered.** Symbolic links already inside the game folder are followed. The game has no way to
 create one, so any such link was put there by the user.
 
+
+## Host enhancements (2026-10-18)
+
+Host-only changes, all off by default; details, settings and measurements in `native-builder/docs/ENHANCEMENTS.md`.
+- **Direct3D correctness:** cull mode and the colour-key render state are honoured (the game uses neither in the
+  scenes traced: CULL_NONE on every draw, COLORKEYENABLE never on). Back buffer → primary Blts were already handled.
+- **Frame rate:** the 60 fps cap is the engine's `MaxFPS`. Movement is frame-rate independent, but the world clock
+  runs fast above about 120 fps (uncapped: 6:00 → 6:37 in 10 s). Host setting `MaxFPS` (defaults domain
+  `local.mm9-native`, env `M1_MAXFPS`) is clamped to 120.
+- **Image quality:** internal render scale 1–4 (UI and 3D stay aligned because the game draws in 800×600 screen
+  space; the game still sees 800×600), MSAA, anisotropic and trilinear filtering.
+- **HD textures:** content-hash dump (`<hash>.png` + `index.tsv`) and replacement (`<hash>.png|.dds`), listing
+  tool `texlist.py`. Work-tree test logs: `m1/logs/enh/`, shots `m1/shots/enh/`, gate `m1/scripts/enh_gate.sh`.

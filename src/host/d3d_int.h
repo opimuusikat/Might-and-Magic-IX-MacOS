@@ -43,3 +43,16 @@ void gpu_readback(int surface);
 void gpu_surface_free(int i);
 void host_pump_events(void);
 void host_request_quit(void);
+
+// HD texture pack (texpack.m): hash, dump and replacement of uploaded textures. texpack_on_upload returns 0 for dynamic textures.
+// (the Metal-side loader texpack_texture is declared in metal.m). texpack_hash returns 0 when dump is off,
+// the texture is dynamic or the format is unsupported (then nothing else is done).
+int  texpack_on(void);                 // dump or replace is on
+int  texpack_replace_on(void);
+int  texpack_noalpha(const Surf *s);   // original format has no alpha (565, XRGB*)
+void texpack_init(void);
+uint64_t texpack_hash(const Surf *root_surface, int root);
+int  texpack_on_upload(int root, const Surf *s, uint64_t hash, int mips, uint64_t frame);
+void texpack_forget(int root);
+void texpack_retain(uint64_t hash);    // refcount of surfaces binding a replacement (cache entry dropped at 0)
+void texpack_release(uint64_t hash);

@@ -10,6 +10,27 @@
 //
 // Env: M1_NULL=1 null device (headless gate), M1_OFFSCREEN=1 render without a window,
 //      M1_DUMP=<frame,frame,...> save those frames as m1_frame_<n>.png, M1_NOVSYNC=1.
+//      M1_NOCULL=1 ignore D3DRENDERSTATE_CULLMODE (always cull none), M1_NOCOLORKEY=1 ignore
+//      D3DRENDERSTATE_COLORKEYENABLE (texture source colour keys stay opaque),
+//      M1_TRACE_CK=1 print render-state / colour-key usage counters (every 50000 draws and at exit).
+//      M1_TRACE_FILT=1 print which texture filter combos (mag/min/mip) the game binds, and how many are mipmapped.
+//      M1_TEXDUMP=1 (key TextureDump): hash every uploaded texture and dump each distinct one once as
+//        <TextureDir>/dump/<hash>.png + index.tsv. M1_TEXDIR=<path> (key TextureDir, default HDTextures in the
+//        game folder). Details in texpack.m. Off by default: no hashing then.
+//      M1_TEXREPLACE=1 (key TextureReplace): upload <TextureDir>/replace/<hash>.png|.dds instead of the original
+//        texture when one exists for the texture's content hash (any size; PNG gets generated mips, DDS DXT1/3/5
+//        or BGRA8 uses the file's mips). Alpha: a no-alpha original (565, XRGB*) stays opaque; for colour-keyed
+//        originals the replacement's alpha 0 is the key. Dynamic textures are never replaced.
+// Image quality (each also a defaults key in local.mm9-native; the env var wins, then the key, then the default):
+//      M1_SCALE=1..4|auto (key RenderScale, 0 = auto): internal render scale. Back buffer, depth and drawable
+//        are W*S x H*S; vertex coordinates stay 800x600 (the `size` uniform), so 3D and 2D scale together. The game
+//        still sees 800x600 (readback is box-filtered down); M1_DUMP png files have the full internal size.
+//        auto = ceil(main screen backing pixel height / H), 1 offscreen. Default 1.
+//      M1_MSAA=1|2|4|8 (key MSAA): multisample count (lowered to what the device supports). Default 1.
+//      M1_ANISO=1..16 (key Anisotropy): max anisotropy for linear-min-filtered mipmapped textures. Default 1
+//        (anisotropy 4 only when the game asks for it).
+//      M1_TRILINEAR=0|1 (key Trilinear): mipmapped textures with a linear min filter blend between mip levels
+//        even when the game asked for point/none mip filtering. Default 0.
 #import <AppKit/AppKit.h>
 #import <Metal/Metal.h>
 #import <QuartzCore/CAMetalLayer.h>
@@ -46,13 +67,19 @@ static id<MTLFunction> vfn, ffn;
 static MTLVertexDescriptor *vdesc;
 static id<MTLRenderPipelineState> pso[512];
 static id<MTLDepthStencilState> dss[64];
-static id<MTLSamplerState> samp[2048];
+static id<MTLSamplerState> samp[4096];
 static NSMutableArray *texs;
+static NSMutableDictionary *ktex;           // root surface index -> keyed BGRA8 variant (nil entry: rebuild)
 static id<MTLTexture> white;
 static pthread_mutex_t lk;
 static int pending_clear = 3; static uint32_t clear_color; static float clear_z = 1.0f;
 static uint64_t frames;
 static int ready;
+static int SC = 1, MS = 1, ANI = 1, TRI = 0;    // render scale, MSAA samples, anisotropy, trilinear (fixed per run)
+static uint32_t BW, BH;                            // internal back buffer size = W*SC x H*SC
+static id<MTLTexture> ms_col, ms_depth;            // multisample colour/depth (MS > 1); bb is then the resolve target
+static id<MTLTexture> rb_tex;                      // W x H BGRA8 for the readback downsample
+static id<MTLRenderPipelineState> down_pso;
 static uint64_t rt_gen = 1;               // bumped by everything that changes the back buffer (see gpu_readback)
 
 static void lk_init(void) { pthread_mutexattr_t a; pthread_mutexattr_init(&a); pthread_mutexattr_settype(&a, PTHREAD_MUTEX_RECURSIVE); pthread_mutex_init(&lk, &a); }
@@ -66,7 +93,7 @@ typedef struct {
     int atest, afunc; float aref; int spec;
     int fog, fogmode; float fogstart, fogend;
     float fogcolor[4]; float tfactor[4];
-    int tex0, tex1, tci1, pad;
+    int tex0, tex1, tci1, ckey;             // ckey: bit 0/1 = stage 0/1 samples a colour-keyed texture (alpha 0 = key)
 } FU;
 
 static const char *msl =
@@ -79,7 +106,7 @@ static const char *msl =
 "  float x = (in.p.x + 0.5) / size.x * 2.0 - 1.0, y = 1.0 - (in.p.y + 0.5) / size.y * 2.0;\n"
 "  o.pos = float4(x * w, y * w, in.p.z * w, w); o.d = in.d; o.s = in.s; o.t0 = in.t0; o.t1 = in.t1; o.w = w; return o; }\n"
 "struct FU { int4 c0, a0, c1, a1; int atest, afunc; float aref; int spec; int fog, fogmode; float fogstart, fogend;\n"
-"  float4 fogcolor; float4 tfactor; int tex0, tex1, tci1, pad; };\n"
+"  float4 fogcolor; float4 tfactor; int tex0, tex1, tci1, ckey; };\n"
 "static float4 arg(int a, float4 dif, float4 cur, float4 tex, float4 tf, float4 spc) {\n"
 "  int s = a & 15; float4 v = s == 0 ? dif : s == 1 ? cur : s == 2 ? tex : s == 3 ? tf : spc;\n"
 "  if (a & 16) v = 1.0 - v; if (a & 32) v = v.aaaa; return v; }\n"
@@ -93,11 +120,13 @@ static const char *msl =
 "  float4 dif = in.d, spc = in.s, tf = u.tfactor, cur = dif;\n"
 "  if (u.c0.x != 1) {\n"
 "    float4 tx = u.tex0 ? t0.sample(s0, in.t0) : float4(1.0);\n"
+"    if ((u.ckey & 1) && tx.a < 0.002) discard_fragment();\n"
 "    float4 c = op(u.c0.x, arg(u.c0.y, dif, cur, tx, tf, spc), arg(u.c0.z, dif, cur, tx, tf, spc), dif, tx, cur, tf);\n"
 "    float4 a = u.a0.x != 1 ? op(u.a0.x, arg(u.a0.y, dif, cur, tx, tf, spc), arg(u.a0.z, dif, cur, tx, tf, spc), dif, tx, cur, tf) : cur;\n"
 "    cur = saturate(float4(c.rgb, a.a));\n"
 "    if (u.c1.x != 1) {\n"
 "      float4 tx1 = u.tex1 ? t1.sample(s1, u.tci1 ? in.t1 : in.t0) : float4(1.0);\n"
+"      if ((u.ckey & 2) && tx1.a < 0.002) discard_fragment();\n"
 "      float4 c1 = op(u.c1.x, arg(u.c1.y, dif, cur, tx1, tf, spc), arg(u.c1.z, dif, cur, tx1, tf, spc), dif, tx1, cur, tf);\n"
 "      float4 a1 = u.a1.x != 1 ? op(u.a1.x, arg(u.a1.y, dif, cur, tx1, tf, spc), arg(u.a1.z, dif, cur, tx1, tf, spc), dif, tx1, cur, tf) : cur;\n"
 "      cur = saturate(float4(c1.rgb, a1.a));\n"
@@ -110,7 +139,14 @@ static const char *msl =
 "    switch (u.afunc) { case 1: pass = false; break; case 2: pass = a < r; break; case 3: pass = a == r; break; case 4: pass = a <= r; break;\n"
 "    case 5: pass = a > r; break; case 6: pass = a != r; break; case 7: pass = a >= r; break; default: pass = true; }\n"
 "    if (!pass) discard_fragment(); }\n"
-"  return cur; }\n";
+"  return cur; }\n"
+// readback downsample: box average of SC x SC back buffer texels per logical pixel
+"struct DOut { float4 pos [[position]]; };\n"
+"vertex DOut dvs(uint vid [[vertex_id]]) { DOut o; float2 p = float2((vid << 1) & 2, vid & 2); o.pos = float4(p * 2.0 - 1.0, 0.0, 1.0); return o; }\n"
+"fragment float4 dfs(DOut in [[stage_in]], texture2d<float> src [[texture(0)]], constant int &sc [[buffer(0)]]) {\n"
+"  uint2 b = uint2(in.pos.xy) * uint(sc); float4 sum = 0;\n"
+"  for (int j = 0; j < sc; j++) for (int i = 0; i < sc; i++) sum += src.read(b + uint2(i, j));\n"
+"  return sum / float(sc * sc); }\n";
 
 // ---- window ----------------------------------------------------------------------------------------
 // Native fullscreen (green button, Ctrl+Cmd+F or the Window menu): the 800x600 back buffer is scaled
@@ -140,6 +176,23 @@ static void save_fs(int on) {
 - (void)quit:(id)sender { (void)sender; host_request_quit(); }
 @end
 static M1WinDelegate *wdel;
+// Host frame-rate setting: M1_MAXFPS env, else CFPreferences key MaxFPS (integer) in PREF_DOMAIN; 0 = uncapped.
+// Returns -1 if unset. (VSync: the layer syncs to the display unless M1_NOVSYNC is set.)
+int host_maxfps_setting(void) {
+    const char *e = getenv("M1_MAXFPS");
+    if (e && *e) return atoi(e) < 0 ? 0 : atoi(e);
+    Boolean valid = false;
+    CFIndex v = CFPreferencesGetAppIntegerValue(CFSTR("MaxFPS"), PREF_DOMAIN, &valid);
+    return valid ? (int)(v < 0 ? 0 : v) : -1;
+}
+// Integer setting: env var wins (the word "auto" reads as 0), then the defaults key in PREF_DOMAIN, else def.
+static int setting_int(const char *env, CFStringRef key, int def) {
+    const char *e = getenv(env);
+    if (e && *e) return strcmp(e, "auto") == 0 ? 0 : atoi(e);
+    Boolean valid = false;
+    CFIndex v = CFPreferencesGetAppIntegerValue(key, PREF_DOMAIN, &valid);
+    return valid ? (int)v : def;
+}
 static int want_fullscreen(void) {
     const char *e = getenv("M1_FULLSCREEN");
     if (e && *e) return atoi(e) != 0;
@@ -183,17 +236,52 @@ void gpu_init(uint32_t w, uint32_t h, int rt) {
         vdesc.layouts[0].stride = sizeof(GV);
         for (int i = 0; i < 3; i++) ring[i] = [mdev newBufferWithLength:RING options:MTLResourceStorageModeShared | MTLResourceCPUCacheModeWriteCombined];
         inflight = dispatch_semaphore_create(3);
+        SC = setting_int("M1_SCALE", CFSTR("RenderScale"), 1);
+        if (SC <= 0) {                                   // auto: backing pixel height of the main screen / H
+            SC = 1;
+            if (!getenv("M1_OFFSCREEN") && [NSThread isMainThread]) {
+                NSScreen *scr = [NSScreen mainScreen];
+                if (scr) SC = (int)ceil(scr.frame.size.height * scr.backingScaleFactor / h);
+            }
+        }
+        SC = SC < 1 ? 1 : SC > 4 ? 4 : SC;
+        MS = setting_int("M1_MSAA", CFSTR("MSAA"), 1);
+        MS = MS >= 8 ? 8 : MS >= 4 ? 4 : MS >= 2 ? 2 : 1;
+        while (MS > 1 && ![mdev supportsTextureSampleCount:(NSUInteger)MS]) MS /= 2;
+        ANI = setting_int("M1_ANISO", CFSTR("Anisotropy"), 1); ANI = ANI < 1 ? 1 : ANI > 16 ? 16 : ANI;
+        TRI = setting_int("M1_TRILINEAR", CFSTR("Trilinear"), 0) != 0;
+        fprintf(stderr, "[metal] render scale %d, MSAA %d, aniso %d, trilinear %d\n", SC, MS, ANI, TRI);
+        MTLRenderPipelineDescriptor *dd = [MTLRenderPipelineDescriptor new];
+        dd.vertexFunction = [lib newFunctionWithName:@"dvs"]; dd.fragmentFunction = [lib newFunctionWithName:@"dfs"];
+        dd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
+        down_pso = [mdev newRenderPipelineStateWithDescriptor:dd error:&err];
+        if (!down_pso) { fprintf(stderr, "[metal] downsample pipeline failed: %s\n", err.localizedDescription.UTF8String); abort(); }
         texs = [NSMutableArray array];
         MTLTextureDescriptor *wd = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm width:1 height:1 mipmapped:NO];
         white = [mdev newTextureWithDescriptor:wd];
         uint32_t px = 0xFFFFFFFFu; [white replaceRegion:MTLRegionMake2D(0, 0, 1, 1) mipmapLevel:0 withBytes:&px bytesPerRow:4];
     }
-    MTLTextureDescriptor *d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm width:w height:h mipmapped:NO];
+    BW = w * (uint32_t)SC; BH = h * (uint32_t)SC;
+    MTLTextureDescriptor *d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm width:BW height:BH mipmapped:NO];
     d.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead; d.storageMode = MTLStorageModePrivate;
     bb = [mdev newTextureWithDescriptor:d];
-    d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatDepth32Float width:w height:h mipmapped:NO];
+    d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatDepth32Float width:BW height:BH mipmapped:NO];
     d.usage = MTLTextureUsageRenderTarget; d.storageMode = MTLStorageModePrivate;
     depth = [mdev newTextureWithDescriptor:d];
+    ms_col = ms_depth = nil;
+    if (MS > 1) {
+        d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm width:BW height:BH mipmapped:NO];
+        d.textureType = MTLTextureType2DMultisample; d.sampleCount = (NSUInteger)MS;
+        d.usage = MTLTextureUsageRenderTarget; d.storageMode = MTLStorageModePrivate;
+        ms_col = [mdev newTextureWithDescriptor:d];
+        d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatDepth32Float width:BW height:BH mipmapped:NO];
+        d.textureType = MTLTextureType2DMultisample; d.sampleCount = (NSUInteger)MS;
+        d.usage = MTLTextureUsageRenderTarget; d.storageMode = MTLStorageModePrivate;
+        ms_depth = [mdev newTextureWithDescriptor:d];
+    }
+    d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm width:w height:h mipmapped:NO];
+    d.usage = MTLTextureUsageRenderTarget; d.storageMode = MTLStorageModePrivate;
+    rb_tex = [mdev newTextureWithDescriptor:d];
     pending_clear = 3; clear_color = 0; clear_z = 1.0f; rt_gen++;
     if (!getenv("M1_OFFSCREEN") && !layer) {
         if (![NSThread isMainThread]) fprintf(stderr, "[metal] gpu_init off the main thread: no window\n");
@@ -231,23 +319,24 @@ void gpu_init(uint32_t w, uint32_t h, int rt) {
             if (want_fullscreen()) { start_fs = 1; [window toggleFullScreen:nil]; }
         }
     }
-    if (layer) layer.drawableSize = CGSizeMake(w, h);
-    fprintf(stderr, "[metal] %s, back buffer %ux%u%s\n", mdev.name.UTF8String, w, h, layer ? ", window" : ", offscreen");
+    if (layer) layer.drawableSize = CGSizeMake(BW, BH);
+    fprintf(stderr, "[metal] %s, back buffer %ux%u (internal %ux%u)%s\n", mdev.name.UTF8String, w, h, BW, BH, layer ? ", window" : ", offscreen");
     ready = 1;
     UNLOCK
 }
 
 // ---- passes ----------------------------------------------------------------------------------------
-static struct { __unsafe_unretained id pso, dss, t0, t1, s0, s1; FU fu; int fu_valid; MTLScissorRect sc; int sc_valid; } ec;
+static struct { __unsafe_unretained id pso, dss, t0, t1, s0, s1; FU fu; int fu_valid; MTLScissorRect sc; int sc_valid; int cull; } ec;
 static void begin_pass(void) {
     if (enc) return;
     if (!cmd) cmd = [queue commandBuffer];
     MTLRenderPassDescriptor *rp = [MTLRenderPassDescriptor renderPassDescriptor];
-    rp.colorAttachments[0].texture = bb;
+    rp.colorAttachments[0].texture = MS > 1 ? ms_col : bb;
     rp.colorAttachments[0].loadAction = (pending_clear & 1) ? MTLLoadActionClear : MTLLoadActionLoad;
     rp.colorAttachments[0].clearColor = MTLClearColorMake(((clear_color >> 16) & 255) / 255.0, ((clear_color >> 8) & 255) / 255.0, (clear_color & 255) / 255.0, (clear_color >> 24) / 255.0);
-    rp.colorAttachments[0].storeAction = MTLStoreActionStore;
-    rp.depthAttachment.texture = depth;
+    if (MS > 1) { rp.colorAttachments[0].resolveTexture = bb; rp.colorAttachments[0].storeAction = MTLStoreActionStoreAndMultisampleResolve; }
+    else rp.colorAttachments[0].storeAction = MTLStoreActionStore;
+    rp.depthAttachment.texture = MS > 1 ? ms_depth : depth;
     rp.depthAttachment.loadAction = (pending_clear & 2) ? MTLLoadActionClear : MTLLoadActionLoad;
     rp.depthAttachment.clearDepth = clear_z;
     rp.depthAttachment.storeAction = MTLStoreActionStore;
@@ -258,7 +347,7 @@ static void begin_pass(void) {
     [enc setVertexBuffer:ring[ring_i] offset:0 atIndex:0];
     [enc setCullMode:MTLCullModeNone];
     [enc setDepthClipMode:MTLDepthClipModeClamp];
-    memset(&ec, 0, sizeof ec);
+    memset(&ec, 0, sizeof ec); ec.cull = 1;          // 1 = none (D3DCULL_NONE), matches setCullMode above
 }
 static void end_pass(void) { if (enc) { [enc endEncoding]; enc = nil; } }
 
@@ -299,6 +388,7 @@ static id<MTLRenderPipelineState> get_pso(void) {
     d.vertexFunction = vfn; d.fragmentFunction = ffn; d.vertexDescriptor = vdesc;
     d.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
     d.depthAttachmentPixelFormat = MTLPixelFormatDepth32Float;
+    d.rasterSampleCount = (NSUInteger)MS;
     if (en) {
         d.colorAttachments[0].blendingEnabled = YES;
         d.colorAttachments[0].sourceRGBBlendFactor = bf(src, 0); d.colorAttachments[0].destinationRGBBlendFactor = bf(dst, 0);
@@ -332,7 +422,8 @@ static id<MTLSamplerState> get_samp(int st, int mipmapped) {
     uint32_t *t = dev.tss[st];
     uint32_t mag = t[16] >= 2 ? 1 : 0, min = t[17] >= 2 ? 1 : 0, mip = mipmapped ? (t[18] == 3 ? 2 : t[18] == 2 ? 1 : 0) : 0;
     uint32_t aniso = (t[16] == 5 || t[17] == 3) ? 1 : 0;
-    uint32_t key = mag | min << 1 | mip << 2 | (t[13] & 3) << 4 | (t[14] & 3) << 6 | aniso << 8 | (t[13] == 4) << 9 | (t[14] == 4) << 10;
+    if (mipmapped && min && TRI) mip = 2;                         // fixed per run: not part of the key
+    uint32_t key = mag | min << 1 | mip << 2 | (t[13] & 3) << 4 | (t[14] & 3) << 6 | aniso << 8 | (t[13] == 4) << 9 | (t[14] == 4) << 10 | (mipmapped ? 1u : 0u) << 11;
     if (samp[key]) return samp[key];
     MTLSamplerDescriptor *d = [MTLSamplerDescriptor new];
     d.magFilter = mag ? MTLSamplerMinMagFilterLinear : MTLSamplerMinMagFilterNearest;
@@ -340,6 +431,7 @@ static id<MTLSamplerState> get_samp(int st, int mipmapped) {
     d.mipFilter = mip == 2 ? MTLSamplerMipFilterLinear : mip == 1 ? MTLSamplerMipFilterNearest : MTLSamplerMipFilterNotMipmapped;
     d.sAddressMode = am(t[13]); d.tAddressMode = am(t[14]);
     if (aniso) d.maxAnisotropy = 4;
+    if (ANI > 1 && min && mipmapped) d.maxAnisotropy = (NSUInteger)ANI;
     samp[key] = [mdev newSamplerStateWithDescriptor:d];
     return samp[key];
 }
@@ -376,6 +468,13 @@ static int chain(int root, int *lv, int max) {
     }
     return n;
 }
+id<MTLTexture> texpack_texture(uint64_t hash, id<MTLDevice> dev, id<MTLCommandQueue> cq, int noalpha);
+static NSMutableDictionary *rtex, *rhash;   // root surface index -> bound replacement texture / its content hash (texpack)
+static void rep_unbind(int root) {
+    NSNumber *k = @(root), *h = rhash[k];
+    if (h) { texpack_release(h.unsignedLongLongValue); [rhash removeObjectForKey:k]; }
+    [rtex removeObjectForKey:k];
+}
 static id<MTLTexture> tex_of(uint32_t obj) {
     if (!obj) return nil;
     uint32_t idx = G32(obj + 8);
@@ -384,12 +483,28 @@ static id<MTLTexture> tex_of(uint32_t obj) {
     Surf *s = &sf[root];
     if (!s->alive || !s->mem) return nil;
     if (s->gpu && !s->dirty) return texs[s->gpu - 1];
+    [ktex removeObjectForKey:@(root)];
     Fmt f = fmt_of(s);
     if (f.pf == MTLPixelFormatInvalid) {
         static int warned; if (warned++ < 5) fprintf(stderr, "[metal] unsupported texture format flags %#x bits %u R %#x\n", SDESC(s, 76), SDESC(s, 84), SDESC(s, 88));
         return nil;
     }
     int lv[16], n = chain(root, lv, 16);
+    if (texpack_on()) {
+        uint64_t th = texpack_hash(s, root);
+        int ok = th ? texpack_on_upload(root, s, th, n, frames) : 0;
+        id<MTLTexture> rt = (ok && texpack_replace_on()) ? texpack_texture(th, mdev, queue, texpack_noalpha(s)) : nil;
+        if (!rtex) { rtex = [NSMutableDictionary dictionary]; rhash = [NSMutableDictionary dictionary]; }
+        if (rt) {
+            NSNumber *oh = rhash[@(root)];
+            if (!oh || oh.unsignedLongLongValue != th) { rep_unbind(root); texpack_retain(th); rhash[@(root)] = @(th); }
+            rtex[@(root)] = rt;
+            if (s->gpu) texs[s->gpu - 1] = rt; else { [texs addObject:rt]; s->gpu = (int)texs.count; }
+            s->dirty = 0;
+            return rt;
+        }
+        rep_unbind(root);
+    }
     uint32_t w = SDESC(s, 12), h = SDESC(s, 8);
     MTLTextureDescriptor *d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:f.pf width:w height:h mipmapped:n > 1];
     if (n > 1) d.mipmapLevelCount = (NSUInteger)n;
@@ -411,7 +526,10 @@ static id<MTLTexture> tex_of(uint32_t obj) {
 void gpu_surface_free(int i) {
     if (!gpu_on()) return;
     LOCK
+    texpack_forget(i);
+    rep_unbind(i);
     if (sf[i].gpu) { texs[sf[i].gpu - 1] = white; }
+    [ktex removeObjectForKey:@(i)];
     UNLOCK
 }
 
@@ -425,6 +543,31 @@ static uint32_t fvf_stride(uint32_t fvf, int *odif, int *ospec, int *otex, int *
     *otex = (int)s; *ntex = (int)((fvf >> 8) & 0xF);
     for (int t = 0; t < *ntex; t++) { uint32_t f = (fvf >> (16 + 2 * t)) & 3; s += f == 0 ? 8 : f == 1 ? 12 : f == 2 ? 16 : 4; }
     return s;
+}
+static int ck_off(void) { static int v = -1; if (v < 0) v = getenv("M1_NOCOLORKEY") != NULL; return v; }
+static int cull_off(void) { static int v = -1; if (v < 0) v = getenv("M1_NOCULL") != NULL; return v; }
+static struct { uint64_t draws, cull[8], ckrs, ckrs_tex, keyed_bound; uint64_t fmt[8]; } trc;
+static int trace_ck(void) { static int v = -1; if (v < 0) v = getenv("M1_TRACE_CK") != NULL; return v; }
+static void trace_ck_dump(void) {
+    fprintf(stderr, "[ck] draws %llu cull(none/cw/ccw/other) %llu/%llu/%llu/%llu colorkeyenable-draws %llu, with keyed tex bound %llu; "
+            "bound keyed-capable textures (draw,stage) by fmt: 16bit565 %llu 16bit1555 %llu 16bit4444 %llu 32bit %llu dxt %llu other %llu\n",
+            (unsigned long long)trc.draws, (unsigned long long)trc.cull[1], (unsigned long long)trc.cull[2], (unsigned long long)trc.cull[3],
+            (unsigned long long)(trc.cull[0] + trc.cull[4] + trc.cull[5] + trc.cull[6] + trc.cull[7]), (unsigned long long)trc.ckrs,
+            (unsigned long long)trc.ckrs_tex, (unsigned long long)trc.fmt[0], (unsigned long long)trc.fmt[1], (unsigned long long)trc.fmt[2],
+            (unsigned long long)trc.fmt[3], (unsigned long long)trc.fmt[4], (unsigned long long)trc.fmt[5]);
+}
+// The keyed variant of a texture whose surface has DDSD_CKSRCBLT (non-DXT, 16/32 bit); nil otherwise.
+static id<MTLTexture> keyed_of(uint32_t obj, int count_only);
+static struct { uint64_t bound[2], combo[8][8][8][2], maxmip; } filt;
+static void trace_filt_dump(void) {
+    fprintf(stderr, "[filt] bound textures (draw,stage): non-mipmapped %llu mipmapped %llu, max mip levels %llu\n",
+            (unsigned long long)filt.bound[0], (unsigned long long)filt.bound[1], (unsigned long long)filt.maxmip);
+    for (int a = 0; a < 8; a++) for (int b = 0; b < 8; b++) for (int c = 0; c < 8; c++) for (int m = 0; m < 2; m++)
+        if (filt.combo[a][b][c][m]) fprintf(stderr, "[filt] mag %d min %d mip %d mipmapped %d: %llu\n", a, b, c, m, (unsigned long long)filt.combo[a][b][c][m]);
+}
+static int trace_filt(void) {
+    static int v = -1; if (v < 0) { v = getenv("M1_TRACE_FILT") != NULL; if (v) atexit(trace_filt_dump); }
+    return v;
 }
 static void set_fu(void) {
     FU u; memset(&u, 0, sizeof u);
@@ -445,9 +588,20 @@ static void set_fu(void) {
     id<MTLTexture> x0 = u.c0[0] != 1 ? tex_of(dev.tex[0]) : nil;
     id<MTLTexture> x1 = (u.c0[0] != 1 && u.c1[0] != 1) ? tex_of(dev.tex[1]) : nil;
     u.tex0 = x0 != nil; u.tex1 = x1 != nil;
+    if (dev.rs[41] && !ck_off()) {
+        id<MTLTexture> k0 = x0 ? keyed_of(dev.tex[0], 0) : nil, k1 = x1 ? keyed_of(dev.tex[1], 0) : nil;
+        if (k0) { x0 = k0; u.ckey |= 1; }
+        if (k1) { x1 = k1; u.ckey |= 2; }
+    }
     id<MTLTexture> b0 = x0 ? x0 : white, b1 = x1 ? x1 : white;
     if (ec.t0 != b0) { [enc setFragmentTexture:b0 atIndex:0]; ec.t0 = b0; }
     if (ec.t1 != b1) { [enc setFragmentTexture:b1 atIndex:1]; ec.t1 = b1; }
+    if (trace_filt()) for (int st = 0; st < 2; st++) {
+        id<MTLTexture> x = st ? x1 : x0; if (!x) continue;
+        uint32_t *t = dev.tss[st]; int mm = x.mipmapLevelCount > 1;
+        filt.bound[mm]++; filt.combo[t[16] & 7][t[17] & 7][t[18] & 7][mm]++;
+        filt.maxmip = MAX(filt.maxmip, (uint64_t)x.mipmapLevelCount);
+    }
     id<MTLSamplerState> s0 = get_samp(0, x0 && x0.mipmapLevelCount > 1), s1 = get_samp(1, x1 && x1.mipmapLevelCount > 1);
     if (ec.s0 != s0) { [enc setFragmentSamplerState:s0 atIndex:0]; ec.s0 = s0; }
     if (ec.s1 != s1) { [enc setFragmentSamplerState:s1 atIndex:1]; ec.s1 = s1; }
@@ -494,10 +648,29 @@ void gpu_draw(uint32_t prim, uint32_t fvf, uint32_t verts, uint32_t nverts, uint
     id<MTLDepthStencilState> ds = get_dss();
     if (ec.dss != ds) { [enc setDepthStencilState:ds]; ec.dss = ds; }
     uint32_t vx, vy, vw, vh; memcpy(&vx, dev.vp, 4); memcpy(&vy, dev.vp + 4, 4); memcpy(&vw, dev.vp + 8, 4); memcpy(&vh, dev.vp + 12, 4);
-    MTLScissorRect sc = {0, 0, W, H};
-    if (vw && vh && vx < W && vy < H) { sc.x = vx; sc.y = vy; sc.width = MIN(vw, W - vx); sc.height = MIN(vh, H - vy); }
+    MTLScissorRect sc = {0, 0, BW, BH};
+    if (vw && vh && vx < W && vy < H) {
+        sc.x = vx * SC; sc.y = vy * SC;
+        sc.width = MIN(MIN(vw, W - vx) * SC, BW - sc.x); sc.height = MIN(MIN(vh, H - vy) * SC, BH - sc.y);
+    }
     if (!ec.sc_valid || memcmp(&ec.sc, &sc, sizeof sc)) { [enc setScissorRect:sc]; ec.sc = sc; ec.sc_valid = 1; }
     set_fu();
+    {   // D3DRENDERSTATE_CULLMODE: 1 none, 2 cw, 3 ccw (triangles only; the engine also culls on the CPU)
+        int cm = (int)dev.rs[22]; if (cm < 1 || cm > 3 || cull_off()) cm = 1;
+        if (pt != MTLPrimitiveTypeTriangle && pt != MTLPrimitiveTypeTriangleStrip) cm = 1;
+        if (ec.cull != cm) {
+            [enc setCullMode:cm == 1 ? MTLCullModeNone : cm == 2 ? MTLCullModeFront : MTLCullModeBack];
+            ec.cull = cm;
+        }
+    }
+    if (trace_ck()) {
+        static int reg; if (!reg) { reg = 1; atexit(trace_ck_dump); }
+        trc.draws++; trc.cull[dev.rs[22] & 7]++;
+        if (dev.rs[41]) { trc.ckrs++; if (ec.fu_valid && (ec.fu.ckey)) trc.keyed_bound++; }
+        for (int st = 0; st < 2; st++) if (dev.tex[st]) keyed_of(dev.tex[st], 1);
+        if (dev.rs[41]) { int any = 0; for (int st = 0; st < 2; st++) if (dev.tex[st] && keyed_of(dev.tex[st], 2)) any = 1; trc.ckrs_tex += any; }
+        if (trc.draws % 50000 == 0) trace_ck_dump();
+    }
     if (p) [enc drawPrimitives:pt vertexStart:ring_off / sizeof(GV) vertexCount:m];
     ring_off += m * sizeof(GV);
     draws++; rt_gen++;
@@ -506,29 +679,77 @@ void gpu_draw(uint32_t prim, uint32_t fvf, uint32_t verts, uint32_t nverts, uint
 
 // Source colour key (DDBLT_KEYSRC): a BGRA copy of the surface whose key-coloured pixels get alpha 0,
 // drawn with an alpha test. Only small sprites use it (the loading screen's animation, 44x36).
-static id<MTLTexture> keyed_tex(const Surf *s) {
-    uint32_t w = SDESC(s, 12), h = SDESC(s, 8), bits = SDESC(s, 84), rm = SDESC(s, 88), pitch = SDESC(s, 16), key = SDESC(s, 64);
-    if (!s->mem || !w || !h || (bits != 32 && bits != 16) || (SDESC(s, 76) & 4)) return nil;
-    uint32_t *px = malloc((size_t)w * h * 4);
+// Converts one level to BGRA8 with key-coloured pixels at 0. keep_alpha: other pixels keep the texture's
+// own alpha (at least 1, so alpha 0 means "key"); otherwise they are opaque. Colour comparison ignores
+// the alpha bits of the format.
+static void key_convert(const Surf *s, uint32_t key, int keep_alpha, uint32_t *px) {
+    uint32_t w = SDESC(s, 12), h = SDESC(s, 8), bits = SDESC(s, 84), rm = SDESC(s, 88), pitch = SDESC(s, 16);
+    int alpha = keep_alpha && (SDESC(s, 76) & 1) && SDESC(s, 100);
     for (uint32_t y = 0; y < h; y++) for (uint32_t x = 0; x < w; x++) {
         const uint8_t *p = MEM + s->mem + y * pitch + x * (bits / 8);
         uint32_t v, o;
-        if (bits == 32) { memcpy(&v, p, 4); o = (v & 0xFFFFFF) == (key & 0xFFFFFF) ? 0 : v | 0xFF000000u; }
-        else {
+        if (bits == 32) {
+            memcpy(&v, p, 4);
+            uint32_t a = alpha ? (v >> 24) : 255; if (!a) a = 1;
+            o = (v & 0xFFFFFF) == (key & 0xFFFFFF) ? 0 : (v & 0xFFFFFF) | a << 24;
+        } else {
             uint16_t q; memcpy(&q, p, 2); v = q;
-            uint32_t r, g, b;
+            uint32_t r, g, b, a = 255, cm = 0xFFFF;
             if (rm == 0xF800) { r = (v >> 11) & 31; g = (v >> 5) & 63; b = v & 31; r = r << 3 | r >> 2; g = g << 2 | g >> 4; b = b << 3 | b >> 2; }
-            else if (rm == 0x0F00) { r = ((v >> 8) & 15) * 17; g = ((v >> 4) & 15) * 17; b = (v & 15) * 17; }
-            else { r = (v >> 10) & 31; g = (v >> 5) & 31; b = v & 31; r = r << 3 | r >> 2; g = g << 3 | g >> 2; b = b << 3 | b >> 2; }
-            o = v == (key & 0xFFFF) ? 0 : 0xFF000000u | r << 16 | g << 8 | b;
+            else if (rm == 0x0F00) { r = ((v >> 8) & 15) * 17; g = ((v >> 4) & 15) * 17; b = (v & 15) * 17; cm = 0x0FFF; if (alpha) { a = (v >> 12) * 17; if (!a) a = 1; } }
+            else { r = (v >> 10) & 31; g = (v >> 5) & 31; b = v & 31; r = r << 3 | r >> 2; g = g << 3 | g >> 2; b = b << 3 | b >> 2; cm = 0x7FFF; if (alpha) { a = (v >> 15) ? 255 : 1; } }
+            o = (v & cm) == (key & cm) ? 0 : a << 24 | r << 16 | g << 8 | b;
         }
         px[(size_t)y * w + x] = o;
     }
+}
+static id<MTLTexture> keyed_tex(const Surf *s) {
+    uint32_t w = SDESC(s, 12), h = SDESC(s, 8), bits = SDESC(s, 84);
+    if (!s->mem || !w || !h || (bits != 32 && bits != 16) || (SDESC(s, 76) & 4)) return nil;
+    uint32_t *px = malloc((size_t)w * h * 4);
+    key_convert(s, SDESC(s, 64), 0, px);
     MTLTextureDescriptor *d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm width:w height:h mipmapped:NO];
     d.usage = MTLTextureUsageShaderRead; d.storageMode = MTLStorageModeShared;
     id<MTLTexture> t = [mdev newTextureWithDescriptor:d];
     [t replaceRegion:MTLRegionMake2D(0, 0, w, h) mipmapLevel:0 withBytes:px bytesPerRow:w * 4];
     free(px);
+    return t;
+}
+// count_only 0: build/fetch the keyed variant; 1: tally the texture's format in the trace; 2: just report applicability.
+static id<MTLTexture> keyed_of(uint32_t obj, int count_only) {
+    if (!obj) return nil;
+    uint32_t idx = G32(obj + 8);
+    if (idx >= (uint32_t)nsf) return nil;
+    int root = surf_root((int)idx);
+    Surf *s = &sf[root];
+    if (!s->alive || !s->mem || !(SDESC(s, 4) & 0x10000)) return nil;
+    if (rhash && rhash[@(root)] && !count_only) {          // replacement: its own alpha is the key
+        id<MTLTexture> rk = texpack_texture(((NSNumber *)rhash[@(root)]).unsignedLongLongValue, mdev, queue, 0);
+        if (rk) return rk;
+    }
+    uint32_t bits = SDESC(s, 84), rm = SDESC(s, 88);
+    if ((SDESC(s, 76) & 4) || (bits != 32 && bits != 16)) { if (count_only == 1) trc.fmt[4]++; return nil; }
+    if (bits == 16 && rm != 0xF800 && rm != 0x7C00 && rm != 0x0F00) { if (count_only == 1) trc.fmt[5]++; return nil; }
+    if (count_only) { if (count_only == 1) trc.fmt[bits == 32 ? 3 : rm == 0xF800 ? 0 : rm == 0x7C00 ? 1 : 2]++; return (id<MTLTexture>)white; }
+    if (!ktex) ktex = [NSMutableDictionary dictionary];
+    id<MTLTexture> t = ktex[@(root)];
+    if (t) return t;
+    int lv[16], n = chain(root, lv, 16);
+    uint32_t w = SDESC(s, 12), h = SDESC(s, 8), key = SDESC(s, 64);
+    MTLTextureDescriptor *d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm width:w height:h mipmapped:n > 1];
+    if (n > 1) d.mipmapLevelCount = (NSUInteger)n;
+    d.usage = MTLTextureUsageShaderRead; d.storageMode = MTLStorageModeShared;
+    t = [mdev newTextureWithDescriptor:d];
+    for (int l = 0; l < n; l++) {
+        Surf *ls = &sf[lv[l]];
+        uint32_t lw = SDESC(ls, 12), lh = SDESC(ls, 8);
+        if (!ls->mem || !lw || !lh) continue;
+        uint32_t *px = malloc((size_t)lw * lh * 4);
+        key_convert(ls, key, 1, px);
+        [t replaceRegion:MTLRegionMake2D(0, 0, lw, lh) mipmapLevel:(NSUInteger)l withBytes:px bytesPerRow:lw * 4];
+        free(px);
+    }
+    ktex[@(root)] = t;
     return t;
 }
 // 2D blit of a CPU surface onto the back buffer: a textured quad, no blending; with `keyed`, the
@@ -537,9 +758,14 @@ void gpu_blit(int src, int sx0, int sy0, int sx1, int sy1, int dx0, int dy0, int
     if (!gpu_on() || !ready) return;
     LOCK
     begin_pass();
-    id<MTLTexture> t = keyed ? keyed_tex(&sf[src]) : tex_of(sf[src].o7);
+    id<MTLTexture> t = nil;
+    if (keyed) {
+        if (texpack_replace_on()) { tex_of(sf[surf_root(src)].o7); int rr = surf_root(src);          // binds/refreshes a replacement
+            NSNumber *h = rhash[@(rr)]; if (h) t = texpack_texture(h.unsignedLongLongValue, mdev, queue, 0); }
+        if (!t) t = keyed_tex(&sf[src]);
+    } else t = tex_of(sf[src].o7);
     if (!t || ring_off + 6 * sizeof(GV) > RING) { UNLOCK return; }
-    float tw = (float)t.width, th = (float)t.height;
+    float tw = (float)SDESC(&sf[surf_root(src)], 12), th = (float)SDESC(&sf[surf_root(src)], 8);   // original size: a replacement texture may be larger
     float u0 = sx0 / tw, v0 = sy0 / th, u1 = sx1 / tw, v1 = sy1 / th;
     GV q[4] = {{dx0 - 0.5f, dy0 - 0.5f, 0, 1, 0xFFFFFFFFu, 0xFF000000u, u0, v0, u0, v0}, {dx1 - 0.5f, dy0 - 0.5f, 0, 1, 0xFFFFFFFFu, 0xFF000000u, u1, v0, u1, v0},
                {dx1 - 0.5f, dy1 - 0.5f, 0, 1, 0xFFFFFFFFu, 0xFF000000u, u1, v1, u1, v1}, {dx0 - 0.5f, dy1 - 0.5f, 0, 1, 0xFFFFFFFFu, 0xFF000000u, u0, v1, u0, v1}};
@@ -547,9 +773,10 @@ void gpu_blit(int src, int sx0, int sy0, int sx1, int sy1, int dx0, int dy0, int
     out[0] = q[0]; out[1] = q[1]; out[2] = q[2]; out[3] = q[0]; out[4] = q[2]; out[5] = q[3];
     if (!pso[0]) { uint32_t b = dev.rs[27]; dev.rs[27] = 0; get_pso(); dev.rs[27] = b; }
     [enc setRenderPipelineState:pso[0]]; ec.pso = pso[0];
+    if (ec.cull != 1) { [enc setCullMode:MTLCullModeNone]; ec.cull = 1; }
     uint32_t z0 = dev.rs[7]; dev.rs[7] = 0; id<MTLDepthStencilState> ds = get_dss(); dev.rs[7] = z0;
     [enc setDepthStencilState:ds]; ec.dss = ds;
-    MTLScissorRect sc = {0, 0, W, H}; [enc setScissorRect:sc]; ec.sc = sc; ec.sc_valid = 1;
+    MTLScissorRect sc = {0, 0, BW, BH}; [enc setScissorRect:sc]; ec.sc = sc; ec.sc_valid = 1;
     FU u; memset(&u, 0, sizeof u);
     u.c0[0] = 2; u.c0[1] = 2; u.a0[0] = 2; u.a0[1] = 2; u.c1[0] = 1; u.tex0 = 1;
     if (keyed) { u.atest = 1; u.afunc = 5; u.aref = 0; }          // keep alpha > 0
@@ -582,8 +809,20 @@ void gpu_readback(int s) {
         end_pass();
         if (!cmd) cmd = [queue commandBuffer];
         if (!rb_buf || rb_buf.length < (NSUInteger)W * H * 4) rb_buf = [mdev newBufferWithLength:(NSUInteger)W * H * 4 options:MTLResourceStorageModeShared];
+        id<MTLTexture> src_tex = bb;
+        if (SC > 1) {      // box-filter the internal image down to the 800x600 the game expects
+            MTLRenderPassDescriptor *rp = [MTLRenderPassDescriptor renderPassDescriptor];
+            rp.colorAttachments[0].texture = rb_tex; rp.colorAttachments[0].loadAction = MTLLoadActionDontCare;
+            rp.colorAttachments[0].storeAction = MTLStoreActionStore;
+            id<MTLRenderCommandEncoder> re = [cmd renderCommandEncoderWithDescriptor:rp];
+            int sc = SC;
+            [re setRenderPipelineState:down_pso]; [re setFragmentTexture:bb atIndex:0]; [re setFragmentBytes:&sc length:4 atIndex:0];
+            [re drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+            [re endEncoding];
+            src_tex = rb_tex;
+        }
         id<MTLBlitCommandEncoder> b = [cmd blitCommandEncoder];
-        [b copyFromTexture:bb sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, 0, 0) sourceSize:MTLSizeMake(W, H, 1)
+        [b copyFromTexture:src_tex sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, 0, 0) sourceSize:MTLSizeMake(W, H, 1)
                   toBuffer:rb_buf destinationOffset:0 destinationBytesPerRow:(NSUInteger)W * 4 destinationBytesPerImage:(NSUInteger)W * H * 4];
         [b endEncoding];
         [cmd commit]; [cmd waitUntilCompleted]; cmd = nil;
@@ -618,36 +857,39 @@ static int in_list(const char *env, char *list, size_t n, int *init, uint64_t f)
 static int want_dump(uint64_t f) { static char l[1024]; static int i; return in_list("M1_DUMP", l, sizeof l, &i, f); }
 static int want_dump_show(uint64_t f) { static char l[1024]; static int i; return in_list("M1_DUMP_SHOW", l, sizeof l, &i, f); }
 static void dump_png(const char *kind, uint64_t frame) {
-    MTLTextureDescriptor *d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm width:W height:H mipmapped:NO];
+    MTLTextureDescriptor *d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm width:BW height:BH mipmapped:NO];
     d.storageMode = MTLStorageModeShared;
     id<MTLTexture> t = [mdev newTextureWithDescriptor:d];
     id<MTLBlitCommandEncoder> b = [cmd blitCommandEncoder];
     [b copyFromTexture:bb toTexture:t]; [b endEncoding];
     [cmd commit]; [cmd waitUntilCompleted]; cmd = [queue commandBuffer];
-    size_t bpr = W * 4;
-    uint8_t *px = malloc(bpr * H);
-    [t getBytes:px bytesPerRow:bpr fromRegion:MTLRegionMake2D(0, 0, W, H) mipmapLevel:0];
+    size_t bpr = BW * 4;
+    uint8_t *px = malloc(bpr * BH);
+    [t getBytes:px bytesPerRow:bpr fromRegion:MTLRegionMake2D(0, 0, BW, BH) mipmapLevel:0];
     CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
-    CGContextRef ctx = CGBitmapContextCreate(px, W, H, 8, bpr, cs, kCGImageAlphaNoneSkipFirst | kCGBitmapByteOrder32Little);
+    CGContextRef ctx = CGBitmapContextCreate(px, BW, BH, 8, bpr, cs, kCGImageAlphaNoneSkipFirst | kCGBitmapByteOrder32Little);
     CGImageRef img = CGBitmapContextCreateImage(ctx);
-    char path[256]; snprintf(path, sizeof path, "m1_%s_%llu.png", kind, (unsigned long long)frame);
+    char path[256]; snprintf(path, sizeof path, kind[0] == 't' && !kind[1] ? "m1_%s%llu.png" : "m1_%s_%llu.png", kind, (unsigned long long)frame);
     CFURLRef url = CFURLCreateFromFileSystemRepresentation(NULL, (const UInt8 *)path, (CFIndex)strlen(path), false);
     CGImageDestinationRef dst = CGImageDestinationCreateWithURL(url, (__bridge CFStringRef)UTTypePNG.identifier, 1, NULL);
     CGImageDestinationAddImage(dst, img, NULL); CGImageDestinationFinalize(dst);
     CFRelease(dst); CFRelease(url); CGImageRelease(img); CGContextRelease(ctx); CGColorSpaceRelease(cs); free(px);
-    fprintf(stderr, "[metal] dumped %s\n", path);
+    fprintf(stderr, "[metal] dumped %s (%ux%u)\n", path, BW, BH);
 }
 // Show the back buffer in the window. Flip does this once per frame. A Blt from the back buffer to the
 // primary surface (gpu_show) does it too: the loading screen is drawn by cshell's loading thread with
 // 2D Blts and copied to the front buffer that way, without Flip. Shows are not counted as frames;
 // M1_DUMP_SHOW=<n,...> dumps the n-th one as m1_show_<n>.png.
+static volatile long pending_tdump = -1;
+void gpu_request_dump(unsigned long ms) { pending_tdump = (long)ms; }   // M1_SCRIPT_MS 'p': dumped at the next flip
 static void present(int flip) {
     static uint64_t shows;
     @autoreleasepool {
         if (pending_clear) begin_pass();
         end_pass();
         if (!cmd) cmd = [queue commandBuffer];
-        if (flip) { frames++; if (want_dump(frames)) dump_png("frame", frames); }
+        if (flip) { frames++; if (want_dump(frames)) dump_png("frame", frames);
+                   if (pending_tdump >= 0) { long t = pending_tdump; pending_tdump = -1; dump_png("t", (uint64_t)t); } }
         else { shows++; if (want_dump_show(shows)) dump_png("show", shows); }
         id<CAMetalDrawable> drawable = layer ? [layer nextDrawable] : nil;
         if (drawable) {

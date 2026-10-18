@@ -315,7 +315,7 @@ static void s_GetCaps(CPU *c) { Surf *s = SU(THIS(c)); uint32_t p = ARG(c, 1); i
 static void s_GetColorKey(CPU *c) { Surf *s = SU(THIS(c)); memcpy(MEM + ARG(c, 2), s->d + 64, 8); RET(c, DD_OK, 3); }
 static void s_SetColorKey(CPU *c) {
     Surf *s = SU(THIS(c)); uint32_t fl = ARG(c, 1), ck = ARG(c, 2);
-    if ((fl & 8) && ck) { memcpy(s->d + 64, MEM + ck, 8); SD(s, 4, D(s, 4) | DDSD_CKSRCBLT); }
+    if ((fl & 8) && ck) { memcpy(s->d + 64, MEM + ck, 8); SD(s, 4, D(s, 4) | DDSD_CKSRCBLT); sf[surf_root((int)(s - sf))].dirty = 1; }
     RET(c, DD_OK, 3);
 }
 static void s_GetDC(CPU *c) { if (trace_dd()) { tr_surf("GetDC", SU(THIS(c))); fprintf(stderr, "\n"); } P32(ARG(c, 1), 0x00030002); RET(c, DD_OK, 2); }

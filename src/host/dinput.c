@@ -157,7 +157,40 @@ void input_mouse_button(int b, int down) {
 // Test hooks. M1_SCRIPT="<frame>:<cmd>[,<a>[,<b>]];..." feeds input at given frames:
 //   m,dx,dy mouse move   d,b / u,b mouse button down/up   k,dik / r,dik key down/up   q quit (= window close)
 // M1_TURN_KEY=<DIK> (key goes down at frame M1_TURN_FRAME, default 300) is kept for the gate tests.
+// M1_SCRIPT_MS: same syntax, times in ms since the first presented frame; extra command p = dump the back
+// buffer at the next flip as m1_t<ms>.png. Each entry fires once, at the first poll at or after its time.
+static void test_hooks_ms(void) {
+    extern uint64_t host_frames(void);
+    extern void gpu_request_dump(unsigned long ms);
+    static int init; static char *script; static uint64_t t0; static unsigned char done[256];
+    if (!init) { init = 1; if (getenv("M1_SCRIPT_MS")) script = strdup(getenv("M1_SCRIPT_MS")); }
+    if (!script || host_frames() == 0) return;
+    struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
+    uint64_t now = (uint64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+    if (!t0) t0 = now;
+    int idx = 0;
+    for (char *p = script; p && *p; idx++) {
+        char *next = strchr(p, ';');
+        long ms = strtol(p, NULL, 10);
+        char *colon = strchr(p, ':');
+        if (colon && (!next || colon < next) && idx < 256 && !done[idx] && (long)(now - t0) >= ms) {
+            done[idx] = 1;
+            char cmd = colon[1]; int a = 0, b = 0;
+            char *c1 = strchr(colon, ','); if (c1 && (!next || c1 < next)) { a = atoi(c1 + 1); char *c2 = strchr(c1 + 1, ','); if (c2 && (!next || c2 < next)) b = atoi(c2 + 1); }
+            if (cmd == 'm') input_mouse_move(a, b);
+            else if (cmd == 'd') input_mouse_button(a, 1);
+            else if (cmd == 'u') input_mouse_button(a, 0);
+            else if (cmd == 'k') input_key(a, 1);
+            else if (cmd == 'r') input_key(a, 0);
+            else if (cmd == 'p') gpu_request_dump((unsigned long)ms);
+            else if (cmd == 'q') { void host_request_quit(void); host_request_quit(); }
+            fprintf(stderr, "[di] script_ms %ld (actual %lld, frame %llu): %c %d %d\n", ms, (long long)(now - t0), (unsigned long long)host_frames(), cmd, a, b);
+        }
+        p = next ? next + 1 : NULL;
+    }
+}
 static void test_hooks(void) {
+    test_hooks_ms();
     extern uint64_t host_frames(void);
     static int init; static char *script; static uint64_t last = ~0ull;
     static int key; static uint32_t at; static int key_done;
