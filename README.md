@@ -136,7 +136,7 @@ your Dock to start it quickly next time.
 | You closed the window by accident | Open the installer again and choose **Use the game already on this Mac**. It continues from where it was. |
 
 Questions or problems? Please [open an issue](https://github.com/opimuusikat/Might-and-Magic-IX-MacOS/issues)
-or visit my GitHub profile: [github.com/opimuusikat](https://github.com/opimuusikat).
+or visit the maintainer's GitHub profile: [github.com/opimuusikat](https://github.com/opimuusikat).
 
 ## Status
 
@@ -261,6 +261,12 @@ The full engineering notes, with measurements, are in [`docs/RECOMP-NOTES.md`](d
 
 ## Prior art and credits
 
+- **Who did the work:** the code, the documentation and the logo were made by AI. Claude
+  (Anthropic), through Claude Code, wrote the recompiler changes, the native host, the builder, the
+  installer and these docs; the commits name the model that wrote each one. The maintainer,
+  [opimuusikat](https://github.com/opimuusikat), chose the goal, wrote the prompts, reviewed the
+  results, play-tested the game and decides what gets published. That is directing and testing,
+  not writing the code.
 - **[Fallout-NV-MacOS](https://github.com/thetheoryofR/Fallout-NV-MacOS)** (MIT, thetheoryofR):
   the P-code lifter, the emitter, the Ghidra repair passes and the first version of several host
   files. This project uses a patched emitter: it honours the x87 rounding control and treats
