@@ -42,8 +42,10 @@ Not done yet:
 
 Requirements:
 - **The Mac:** Apple Silicon and macOS 13 or later.
-- **Apple's Command Line Tools** (`xcode-select --install`). No Xcode, no Homebrew and no Apple ID
-  needed.
+- **Apple's Command Line Tools** (`xcode-select --install`). No Xcode and no Apple ID needed.
+  Homebrew is needed only for `brew install innoextract` if you start from the GOG installer
+  (`.exe`) instead of an unpacked game folder or the Wine app's copy; `brew install ffmpeg` is
+  optional (movies).
 - **Your own GOG copy of Might and Magic 9 (Writ of Fate), version 1.3.** The builder checks the
   SHA-256 of the five code modules.
 - **About 4 GB of free disk space and an internet connection.** The builder downloads Ghidra 12.1.4,

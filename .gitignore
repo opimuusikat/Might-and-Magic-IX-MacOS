@@ -1,5 +1,16 @@
 # Game-derived material never lives here: the builder works in ~/Library/Application Support/MM9 Native.
 *.exe
+*.EXE
+*.DLL
+*.ico
+*.ICO
+*.tsk
+*.flt
+*.M3D
+*.ASI
+*.LTO
+*.REN
+*.FXD
 *.dll
 *.ren
 *.lto

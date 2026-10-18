@@ -4,6 +4,10 @@ MM9 NATIVE BUILDER
 This builds "MM9 Native.app": Might and Magic IX running natively on Apple Silicon, with no Wine
 and no Rosetta. It holds a steady 60 fps where the Wine app manages about 23.
 
+For educational and research purposes only. This package contains no game code, no game assets and
+nothing derived from a game. You must bring your own legally purchased copy of Might and Magic IX
+(GOG release 1.3).
+
 The builder contains no part of the game. It reads YOUR OWN copy of the game, translates the
 game's code into a Mac program on YOUR Mac, and the result stays on your Mac. Because the app it
 makes contains the game's code, never share that app. Friends run this builder themselves.
@@ -15,6 +19,9 @@ WHAT YOU NEED
 - The GOG version 1.3 of the game. The easiest way is to have the "Might and Magic IX" app (the Wine
   version) and to have started it once, so it has unpacked the game. The builder finds the game
   there by itself. Any other folder with the GOG 1.3 game files also works; it will ask.
+  If you only have the GOG installer (.exe), the builder unpacks it with innoextract, which you
+  install once with: brew install innoextract. (Or run the Wine app once, or pick an already
+  unpacked game folder, and you do not need innoextract.)
 - Apple's Command Line Tools. If they are missing, the builder opens Apple's install window. They
   take about 10 minutes to install and need no Apple ID. Then run the builder again.
 - About 4 GB of free disk space and an internet connection. The builder downloads Ghidra (an

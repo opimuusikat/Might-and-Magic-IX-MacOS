@@ -17,5 +17,9 @@ Optional, installed by you
 - FFmpeg (for example: brew install ffmpeg). The app runs the ffmpeg command-line tool to play the
   game's Bink movies; nothing from FFmpeg is linked into the app.
 
+- innoextract (Daniel Scharrer, https://constexpr.org/innoextract/), zlib-style licence. If you start
+  from the GOG installer, the builder runs the innoextract command-line tool to unpack it
+  (for example: brew install innoextract); nothing from it is linked or included.
+
 Not included, and never shared: anything from Might and Magic IX. The builder reads your own copy
 of the game and makes everything game-derived on your Mac.
