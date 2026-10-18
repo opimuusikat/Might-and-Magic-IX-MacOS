@@ -71,6 +71,42 @@ static void put_mode_pf(uint32_t p) {
 #define MAXSURF 65536
 #define DEADSURF MAXSURF        // where the guest objects of freed surfaces point (alive 0, no memory): a stale pointer can't alias a reused slot
 Surf *sf; int nsf;
+// ---- BindTexture hook (P7): engine RenderStruct+0x78 = d3d.ren FUN_1001fc10(SharedTexture *tex, changed, flag), cdecl.
+// tex+0x24 -> FileIdent, FileIdent+0x1c -> char* normalised path ("TEXTURES\A9...\X.DTX"). While the original runs, g_bind_path
+// is the interned path and every surface created / locked / unlocked gets it (Surf.path); free_surface clears it.
+extern void g_1001fc10(CPU *);
+extern void rt_register_fn(uint32_t a, void (*f)(CPU *));
+static uint32_t g_bind_path;
+static char **ptab; static uint32_t np, pcap, *phash, phcap;
+const char *tex_path_str(uint32_t id) { return id && id < np ? ptab[id] : NULL; }
+static uint32_t path_intern(const char *s) {
+    uint32_t h = 2166136261u; for (const char *p = s; *p; p++) h = (h ^ (uint8_t)*p) * 16777619u;
+    if (!phash) { phcap = 16384; phash = calloc(phcap, 4); pcap = 4096; ptab = calloc(pcap, sizeof *ptab); np = 1; }
+    for (uint32_t k = h & (phcap - 1);; k = (k + 1) & (phcap - 1)) {
+        if (!phash[k]) {
+            if (np + 1 >= pcap || np * 2 >= phcap) return 0;       // table full (~3.5k textures expected)
+            ptab[np] = strdup(s); phash[k] = np; return np++;
+        }
+        if (!strcmp(ptab[phash[k]], s)) return phash[k];
+    }
+}
+static int bind_logn, bind_n, bind_nopath;
+static void hook_bind(CPU *c) {
+    uint32_t tex = ARG(c, 0), id = 0;
+    uint32_t fi = tex > 0x1000 && tex < 0xFEE00000u ? G32(tex + 0x24) : 0, sp = fi > 0x1000 && fi < 0xFEE00000u ? G32(fi + 0x1c) : 0;
+    if (sp > 0x1000 && sp < 0xFEE00000u) {
+        char b[300]; int n = 0; while (n < 299 && MEM[sp + n]) { b[n] = (char)MEM[sp + n]; n++; } b[n] = 0;
+        if (n > 0 && n < 299) id = path_intern(b);
+    }
+    bind_n++; if (!id) bind_nopath++;
+    if (bind_logn < 8 && getenv("M1_BINDLOG")) { bind_logn++; fprintf(stderr, "[bind] tex %#x args %#x %#x path %s\n", tex, ARG(c, 1), ARG(c, 2), id ? ptab[id] : "(none)"); }
+    uint32_t prev = g_bind_path; g_bind_path = id;
+    g_1001fc10(c);
+    g_bind_path = prev;
+}
+void texhook_install(void) { rt_register_fn(0x1001fc10u, hook_bind); fprintf(stderr, "[texhook] BindTexture hook installed (RenderStruct+0x78 = 0x1001fc10)\n"); }
+void texhook_stats(int *binds, int *nopath, int *paths) { *binds = bind_n; *nopath = bind_nopath; *paths = np ? (int)np - 1 : 0; }
+
 static int *freel, nfree;       // freed slots, reused by new_surface
 static pthread_mutex_t sl = PTHREAD_MUTEX_INITIALIZER;
 static uint32_t vt_surf7, vt_surf1, vt_dd7, vt_dd1, vt_d3d7, vt_dev7, vt_vb7;
@@ -92,7 +128,7 @@ static int new_surface(uint32_t w, uint32_t h, const uint8_t *pfsrc, uint32_t ca
     Surf *s = &sf[i];
     int gpu = s->gpu;           // a reused slot keeps its backend texture slot (re-uploaded: dirty)
     memset(s, 0, sizeof *s);
-    s->owner = owner; s->alive = 1; s->dirty = 1; s->gpu = gpu;
+    s->owner = owner; s->alive = 1; s->dirty = 1; s->gpu = gpu; s->path = g_bind_path;
     SD(s, 0, 124);
     SD(s, 8, h); SD(s, 12, w);
     memcpy(s->d + 72, pfsrc, 32);
@@ -118,7 +154,7 @@ static uint32_t surf_release(uint32_t o);
 static void free_surface(int i) {
     Surf *s = &sf[i];
     if (!s->alive) return;
-    s->alive = 0;
+    s->alive = 0; s->path = 0;
     for (int k = 0; k < s->natt; k++) if (sf[s->att[k]].owner == i) free_surface(s->att[k]);
     for (int k = 0; k < s->nadded; k++) surf_release(sf[s->added[k]].o7);
     gpu_surface_free(i);
@@ -343,6 +379,7 @@ static void s_IsLost(CPU *c) { RET(c, DD_OK, 1); }
 static void s_Restore(CPU *c) { RET(c, DD_OK, 1); }
 static void s_Lock(CPU *c) {
     Surf *s = SU(THIS(c)); uint32_t rect = ARG(c, 1), desc = ARG(c, 2);
+    if (g_bind_path && s) sf[surf_root((int)(s - sf))].path = g_bind_path;
     if (trace_dd() && (is_rt(s) || !(SDESC(s, 104) & CAPS_TEXTURE))) { tr_surf("Lock", s); tr_rect("rect", rect); fprintf(stderr, " flags %#x\n", ARG(c, 3)); }
     put_desc(desc, s, OKIND(THIS(c)) == 1);
     if (is_rt(s)) gpu_readback((int)(s - sf));          // the CPU reads what the GPU drew (save thumbnails)
@@ -355,7 +392,7 @@ static void s_Lock(CPU *c) {
     P32(desc + 4, G32(desc + 4) | DDSD_LPSURFACE);
     RET(c, DD_OK, 5);
 }
-static void s_Unlock(CPU *c) { Surf *s = SU(THIS(c)); if (s) sf[surf_root((int)(s - sf))].dirty = 1; RET(c, DD_OK, 2); }
+static void s_Unlock(CPU *c) { Surf *s = SU(THIS(c)); if (s) { sf[surf_root((int)(s - sf))].dirty = 1; if (g_bind_path) sf[surf_root((int)(s - sf))].path = g_bind_path; } RET(c, DD_OK, 2); }
 static void s_SetClipper(CPU *c) { RET(c, DD_OK, 2); }
 static void s_SetPalette(CPU *c) { RET(c, DD_OK, 2); }
 static void s_GetDDInterface(CPU *c) { com_addref(dd7_obj); P32(ARG(c, 1), dd7_obj); RET(c, DD_OK, 2); }

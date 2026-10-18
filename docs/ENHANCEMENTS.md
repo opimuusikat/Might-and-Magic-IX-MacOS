@@ -133,6 +133,31 @@ texture folders are `…/MM9 Native/game/HDTextures/{dump,replace}`.
   rejected with a log line, and the original texture is used. This was tested with a pack containing a
   random-bytes PNG, a PNG header claiming 32767×32767, and a truncated DDS. Unused replacements are freed
   when no surface uses them any more. The hash ignores the unused bits of the X formats.
+- **Replacement by texture file name (recommended for HD packs):** the host hooks the renderer's
+  BindTexture call (`d3d.ren` 0x1001fc10, reached through the engine's renderer function table).
+  That tells it which DTX file each GPU texture came from, e.g. `TEXTURES\A3STURMGAARD\WALLS\STURMCHURCHBASE.DTX`.
+  - **File name:** a replacement named `replace/textures/a3sturmgaard/walls/sturmchurchbase.png` (or `.dds`;
+    lower case, `/`, no `.dtx`) is used first. The content hash is the fallback.
+  - **Coverage:** every DTX-based texture (world, skins, sprites) is covered. UI pictures (PCX), lightmaps
+    and video frames don't go through BindTexture, so they still use the hash names.
+  - **Tested in bootcamp:** six replacements loaded by path name and showed up in the right places; an
+    empty replace folder looked the same as replace off.
+- **Export all textures:** `python3 dev/rezlist.py <game>/data --export <TextureDir>` writes every DTX
+  from TEXTURES.REZ, SPRITETEXTURES.REZ and SKINS.REZ to `<TextureDir>/source/<path>.png`, plus an
+  `index.tsv` (path, size, format, mips, has_alpha).
+  - **Size and time:** 3,503 textures, 149 MB, about 18 s.
+  - **Next step:** upscale these (e.g. with an AI upscaler) and save them under the same relative path
+    in `replace/`.
+  - **Alpha:** textures whose alpha channel is one constant value are exported opaque, because some
+    32-bit skins store alpha 0 everywhere and the engine ignores it.
+  - **Keep it private:** the exported files are the game's own art and must never be shared.
+- **Original textures** (`OriginalTextures` / `M1_ORIGTEX`, off by default): passes `+32BitTextures 1` to
+  the engine.
+  - **What changes:** 32-bit DTX textures are uploaded as ARGB8888 instead of being reduced to
+    RGB565/ARGB4444. In bootcamp that is 16 textures.
+  - **What is already full quality:** DXT textures are copied as they are, and all DTX uploads already
+    carry their full mip chain.
+  - **Cost:** no measurable fps cost.
 - **Workflow:** play with `TextureDump` on, then run `texlist.py`. Upscale the textures you want and save
   them under the same name in `replace/`, then switch `TextureReplace` on.
 

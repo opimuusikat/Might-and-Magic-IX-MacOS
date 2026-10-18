@@ -56,10 +56,16 @@ static NSString *dir_setting(void) {
 }
 static void summary(void) {
     if (q) dispatch_sync(q, ^{});       // drain pending writes
+    { extern void texhook_stats(int *, int *, int *); int b, n, u; texhook_stats(&b, &n, &u); fprintf(stderr, "[texhook] %d BindTexture calls, %d without path, %d distinct paths\n", b, n, u); }
     fprintf(stderr, "[texpack] %llu textures dumped (%llu written), %llu dynamic skipped\n",
             (unsigned long long)n_dumped, (unsigned long long)n_written, (unsigned long long)n_dyn);
 }
 static NSString *rep_dir;
+static NSMutableDictionary *rep_pkey;             // normalised path -> tagged key
+static int n_pfiles, rep_atexit, n_bypath, n_byhash;
+static NSMutableSet *rep_seen;
+static NSMutableDictionary *rep_byid;
+static void rep_summary(void) { fprintf(stderr, "[texpack] replace: %d by path, %d by hash\n", n_bypath, n_byhash); }
 static NSMutableDictionary *rep_files, *rep_cache, *rep_opaque, *rep_ref;      // hash -> path; hash -> texture or NSNull (load failed); opaque views; refcounts
 static int dump_atexit;
 static void setup_dump(void) {
@@ -84,7 +90,23 @@ static void setup_replace(void) {       // (re)scans <TextureDir>/replace
         if (rep_files[k] && [ext isEqualToString:@"png"]) continue;     // .dds wins over .png
         rep_files[k] = [rep_dir stringByAppendingPathComponent:n];
     }
-    fprintf(stderr, "[texpack] replace: %lu files (%s)\n", (unsigned long)rep_files.count, rep_dir.fileSystemRepresentation);
+    // by path: every <name>.png|.dds below replace/ (recursively) that is not a 16-hex hash file; key = lower-case path with '/'
+    // and without extension (e.g. textures/a9jyrkavik/walls/wainscot-books-full), mapped to a tagged key (bit 63) in rep_files.
+    rep_pkey = [NSMutableDictionary dictionary]; rep_byid = nil;
+    NSDirectoryEnumerator *en = [[NSFileManager defaultManager] enumeratorAtPath:rep_dir];
+    for (NSString *rel in en) {
+        NSString *ext = rel.pathExtension.lowercaseString;
+        if (![ext isEqualToString:@"png"] && ![ext isEqualToString:@"dds"]) continue;
+        NSString *np = [[rel.stringByDeletingPathExtension stringByReplacingOccurrencesOfString:@"\\" withString:@"/"] lowercaseString];
+        if (![np containsString:@"/"] && np.length == 16) continue;          // top-level hash file
+        uint64_t hh = 1469598103934665603ull; for (const char *p = np.UTF8String; *p; p++) hh = (hh ^ (uint8_t)*p) * 1099511628211ull;
+        NSNumber *k = @(hh | (1ull << 63));
+        NSString *full = [rep_dir stringByAppendingPathComponent:rel];
+        if (rep_files[k] && [ext isEqualToString:@"png"]) continue;
+        rep_files[k] = full; rep_pkey[np] = k; n_pfiles++;
+    }
+    fprintf(stderr, "[texpack] replace: %lu files (%s), %d by path name\n", (unsigned long)rep_files.count - n_pfiles, rep_dir.fileSystemRepresentation, n_pfiles);
+    if (!rep_atexit) { rep_atexit = 1; atexit(rep_summary); }
 }
 void texpack_init(void) {
     if (dump_on >= 0) return;
@@ -278,6 +300,7 @@ int texpack_on_upload(int root, const Surf *s, uint64_t hash, int mips, uint64_t
     uint8_t *raw = malloc(rb * rows);                     // packed copy of level 0; decoding + PNG happen off-thread
     for (uint32_t y = 0; y < rows; y++) memcpy(raw + y * rb, MEM + s->mem + y * pt, rb);
     NSString *dir = dump_dir;
+    const char *pstr = tex_path_str(s->path);       // interned for the life of the process
     dispatch_async(q, ^{
         @autoreleasepool {
             NSString *name = [NSString stringWithFormat:@"%016llx", (unsigned long long)hash];
@@ -291,9 +314,9 @@ int texpack_on_upload(int root, const Surf *s, uint64_t hash, int mips, uint64_t
                 int isnew = ![[NSFileManager defaultManager] fileExistsAtPath:ip];
                 FILE *f = fopen(ip.fileSystemRepresentation, "a");
                 if (f) {
-                    if (isnew) fprintf(f, "hash\twidth\theight\tformat\tmips\thas_alpha\tcolorkey\tfirst_frame\tcaps\n");
-                    fprintf(f, "%s\t%u\t%u\t%s\t%d\t%d\t%d\t%llu\t%08x\n", name.UTF8String, w, h, fmt_name[fc], mips, hasalpha, keyed,
-                            (unsigned long long)frame, caps);
+                    if (isnew) fprintf(f, "hash\twidth\theight\tformat\tmips\thas_alpha\tcolorkey\tfirst_frame\tcaps\tpath\n");
+                    fprintf(f, "%s\t%u\t%u\t%s\t%d\t%d\t%d\t%llu\t%08x\t%s\n", name.UTF8String, w, h, fmt_name[fc], mips, hasalpha, keyed,
+                            (unsigned long long)frame, caps, pstr ? pstr : "-");
                     fclose(f);
                 }
                 n_written++;
@@ -418,6 +441,33 @@ static id<MTLTexture> load_dds(NSString *path, id<MTLDevice> dev, id<MTLCommandQ
         [cb commit]; [cb waitUntilCompleted];
     }
     return forced ? one_alpha(t) : t;
+}
+// Which replacement (if any) applies to this uploaded root surface: the key of a path-named file (surface tagged by the
+// BindTexture hook, tex_path_str) first, else the content hash when a <hash> file exists (hash_ok: hash valid / not dynamic).
+// The key indexes texpack_texture/retain/release. 0: none.
+uint64_t texpack_resolve(const Surf *s, uint64_t hash, int hash_ok) {
+    if (!rep_on) return 0;
+    uint64_t key = 0;
+    const char *ps = tex_path_str(s->path);
+    if (ps && rep_pkey.count) {
+        if (!rep_byid) rep_byid = [NSMutableDictionary dictionary];      // interned path id -> key or NSNull (cleared on rescan)
+        NSMutableDictionary *byid = rep_byid;
+        NSNumber *idk = @(s->path), *hit = byid[idk];
+        if (!hit) {
+            NSString *np = [[[NSString stringWithUTF8String:ps] lowercaseString] stringByReplacingOccurrencesOfString:@"\\" withString:@"/"];
+            if ([np hasSuffix:@".dtx"]) np = [np substringToIndex:np.length - 4];
+            hit = rep_pkey[np] ? rep_pkey[np] : (NSNumber *)[NSNull null]; byid[idk] = hit;
+        }
+        if (hit != (NSNumber *)[NSNull null]) key = hit.unsignedLongLongValue;
+    }
+    int bypath = key != 0;
+    if (!key && hash_ok && hash && rep_files[@(hash)]) key = hash;
+    if (key) {
+        if (!rep_seen) rep_seen = [NSMutableSet set];
+        NSNumber *kk = @(key);
+        if (![rep_seen containsObject:kk]) { [rep_seen addObject:kk]; if (bypath) n_bypath++; else n_byhash++; }
+    }
+    return key;
 }
 // Replacement texture for a content hash (cached while a surface holds it, see texpack_retain/release), or nil.
 // noalpha: return an opaque view (alpha reads as 1) for originals without alpha; 0: the file's own alpha

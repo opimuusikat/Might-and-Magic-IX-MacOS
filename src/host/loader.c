@@ -143,6 +143,7 @@ static void dll_attach(CPU *c, Module *m) {
     uint32_t args[3] = {m->base, 1, 0};
     uint32_t r = host_call(c, m->base + m->entry, 3, args);
     if (!r) fprintf(stderr, "[loader]   DllMain(%s) returned FALSE\n", m->name);
+    if (!strcmp(m->name, "d3d.ren") && m->base == 0x10000000u) { extern void texhook_install(void); texhook_install(); }
     if (!strcmp(m->name, "cshell.dll")) { extern void optmenu_install(uint32_t); optmenu_install(m->base); }
 }
 

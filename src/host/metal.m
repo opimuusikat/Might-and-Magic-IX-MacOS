@@ -197,6 +197,14 @@ int host_maxfps_setting(void) {
     CFIndex v = CFPreferencesGetAppIntegerValue(CFSTR("MaxFPS"), PREF_DOMAIN, &valid);
     return valid ? (int)(v < 0 ? 0 : v) : -1;
 }
+// "Original textures": env M1_ORIGTEX, else key OriginalTextures (bool), default off. k32.c host_init_args then adds
+// +32BitTextures 1 to the guest command line (32-bit DTX skins/sprites upload as ARGB8888 instead of 565/4444).
+int host_origtex_setting(void) {
+    const char *e = getenv("M1_ORIGTEX");
+    if (e && *e) return atoi(e) != 0;
+    Boolean valid = false, on = CFPreferencesGetAppBooleanValue(CFSTR("OriginalTextures"), PREF_DOMAIN, &valid);
+    return valid && on;
+}
 // Integer setting: env var wins (the word "auto" reads as 0), then the defaults key in PREF_DOMAIN, else def.
 static int setting_int(const char *env, CFStringRef key, int def) {
     const char *e = getenv(env);
@@ -506,6 +514,7 @@ static int chain(int root, int *lv, int max) {
     return n;
 }
 id<MTLTexture> texpack_texture(uint64_t hash, id<MTLDevice> dev, id<MTLCommandQueue> cq, int noalpha);
+uint64_t texpack_resolve(const Surf *s, uint64_t hash, int hash_ok);
 static NSMutableDictionary *rtex, *rhash;   // root surface index -> bound replacement texture / its content hash (texpack)
 static void rep_unbind(int root) {
     NSNumber *k = @(root), *h = rhash[k];
@@ -530,11 +539,12 @@ static id<MTLTexture> tex_of(uint32_t obj) {
     if (texpack_on()) {
         uint64_t th = texpack_hash(s, root);
         int ok = th ? texpack_on_upload(root, s, th, n, frames) : 0;
-        id<MTLTexture> rt = (ok && texpack_replace_on()) ? texpack_texture(th, mdev, queue, texpack_noalpha(s)) : nil;
+        uint64_t rk = texpack_replace_on() ? texpack_resolve(s, th, ok) : 0;       // path-named file first, else <hash>
+        id<MTLTexture> rt = rk ? texpack_texture(rk, mdev, queue, texpack_noalpha(s)) : nil;
         if (!rtex) { rtex = [NSMutableDictionary dictionary]; rhash = [NSMutableDictionary dictionary]; }
         if (rt) {
             NSNumber *oh = rhash[@(root)];
-            if (!oh || oh.unsignedLongLongValue != th) { rep_unbind(root); texpack_retain(th); rhash[@(root)] = @(th); }
+            if (!oh || oh.unsignedLongLongValue != rk) { rep_unbind(root); texpack_retain(rk); rhash[@(root)] = @(rk); }
             rtex[@(root)] = rt;
             if (s->gpu) texs[s->gpu - 1] = rt; else { [texs addObject:rt]; s->gpu = (int)texs.count; }
             s->dirty = 0;

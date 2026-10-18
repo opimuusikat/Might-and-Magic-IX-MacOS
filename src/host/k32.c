@@ -38,6 +38,14 @@ void host_init_args(int argc, char **argv) {
         fprintf(stderr, "[host] MaxFPS override %d\n", mf);
     } else if (mf >= 0) fprintf(stderr, "[host] MaxFPS setting %d ignored: +MaxFPS given on the command line\n", mf);
     else fprintf(stderr, "[host] MaxFPS: no override (autoexec.cfg value applies)\n");
+    // Original textures (M1_ORIGTEX / key OriginalTextures, default off): +32BitTextures 1 unless given explicitly on argv.
+    extern int host_origtex_setting(void);
+    if (host_origtex_setting()) {
+        int ex = 0;
+        for (int i = 0; i < argc; i++) if (!strcasecmp(argv[i], "+32BitTextures")) ex = 1;
+        if (!ex) { strncat(saved_cmdline, " +32BitTextures 1", sizeof saved_cmdline - strlen(saved_cmdline) - 1); fprintf(stderr, "[host] OriginalTextures: +32BitTextures 1\n"); }
+        else fprintf(stderr, "[host] OriginalTextures ignored: +32BitTextures given on the command line\n");
+    }
     fprintf(stderr, "[host] VSync %s (M1_NOVSYNC=1 disables)\n", getenv("M1_NOVSYNC") ? "off" : "on");
     fprintf(stderr, "[host] command line: %s\n", saved_cmdline);
 }

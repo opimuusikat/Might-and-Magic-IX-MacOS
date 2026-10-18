@@ -13,8 +13,10 @@ typedef struct {
     int alive;
     int dirty;                  // on the root: CPU contents changed since the last GPU upload
     int gpu;                    // backend texture slot + 1 (0: none yet)
+    uint32_t path;              // interned DTX path (tex_path_str) of the engine texture bound while this surface was made/locked; 0 none
 } Surf;
 extern Surf *sf;
+const char *tex_path_str(uint32_t id);   // ddraw.c: BindTexture hook path table (0 -> NULL)
 extern int nsf;
 
 typedef struct {
