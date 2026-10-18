@@ -126,27 +126,26 @@ your Dock to start it quickly next time.
 
 ### How to update
 
-If a newer version of this project comes out, you do not have to start over. The **updater** looks at what
-you have and brings it up to date. Your game copy, saved games and settings stay.
+When a new version comes out (see the [**Releases** page](https://github.com/opimuusikat/Might-and-Magic-IX-MacOS/releases/latest)),
+you do not have to start over. Use the **updater**, the **green** window, so you can tell it apart from the
+blue installer. It rebuilds your MM9 Native with the new version from the game copy already on your Mac. You
+do not need the GOG installer again. Your saved games and settings stay.
 
-1. Open the [**Releases** page](https://github.com/opimuusikat/Might-and-Magic-IX-MacOS/releases/latest) and
-   download **`MM9-Native-Updater.dmg`**.
-2. Open it and start **MM9 Native Updater** the same way as the installer (Step 2 and Step 3 above; macOS is
-   cautious the first time).
-3. Click **Next >**. The updater shows what it found: your MM9 Native, which version built it, the game
-   copy and your saves, the tools, and your Mac. It also says what will be updated and why.
+<p align="center"><img src="docs/img/updater-analysis.png" width="460" alt="MM9 Native Updater: what it found and what will be updated"></p>
 
-<p align="center"><img src="docs/img/updater-analysis.png" width="460" alt="Updater: what it found and what will be updated"></p>
-4. Click **Next >** again, leave the boxes as they are, and click **Update**. This takes a few minutes, up to
-   25 on an older Mac. Keep the window open.
+1. On the Releases page, download **`MM9-Native-Updater.dmg`** and open it.
+2. Start **MM9 Native Updater**. The first time, macOS is cautious, just as with the installer (see Step 3
+   above).
+3. Click **Next >**. The updater checks your Mac: your MM9 Native, which version built it, the game copy, your
+   saves and the tools. Under the list it says whether an update is needed and why. If everything is up to
+   date, it says so, and you can close it.
+4. Click **Next >**, leave the boxes as they are, and click **Update**. It takes a few minutes (up to 25 on an
+   older Mac). Keep the window open and do not close the lid.
+5. Click **Finish** and start the game as usual. The new options are in Options → **Video Options**.
 
-<p align="center"><img src="docs/img/updater-components.png" width="460" alt="Updater: choose what to update"></p>
-
-<p align="center"><img src="docs/img/updater-install.png" width="460" alt="Updater: updating"></p>
-5. Click **Finish**. Before it changes anything, the updater copies your saved games to
-   `~/Library/Application Support/MM9 Native/backups`. If the update fails, your old MM9 Native is left as it was.
-
-<p align="center"><img src="docs/img/updater-done.png" width="460" alt="Updater: finished"></p>
+**Safety:** before it changes anything, the updater copies your saved games to
+`~/Library/Application Support/MM9 Native/backups`. If the update fails, your old MM9 Native stays as it was.
+Click **Try Again**, or **Copy log** and [open an issue](https://github.com/opimuusikat/Might-and-Magic-IX-MacOS/issues).
 
 ### Something went wrong?
 
