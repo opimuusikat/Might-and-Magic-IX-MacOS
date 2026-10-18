@@ -69,7 +69,9 @@ static void put_mode_pf(uint32_t p) {
 #define CAPS_LOCALVIDMEM 0x10000000
 
 #define MAXSURF 65536
+#define DEADSURF MAXSURF        // where the guest objects of freed surfaces point (alive 0, no memory): a stale pointer can't alias a reused slot
 Surf *sf; int nsf;
+static int *freel, nfree;       // freed slots, reused by new_surface
 static pthread_mutex_t sl = PTHREAD_MUTEX_INITIALIZER;
 static uint32_t vt_surf7, vt_surf1, vt_dd7, vt_dd1, vt_d3d7, vt_dev7, vt_vb7;
 static uint32_t dd7_obj, d3d7_obj;
@@ -77,17 +79,20 @@ static uint64_t live_surface_bytes;
 
 static uint32_t D(Surf *s, int off) { uint32_t v; memcpy(&v, s->d + off, 4); return v; }
 static void SD(Surf *s, int off, uint32_t v) { memcpy(s->d + off, &v, 4); }
-static Surf *SU(uint32_t obj) { uint32_t i = OIDX(obj); return i < (uint32_t)nsf ? &sf[i] : NULL; }
+static Surf *SU(uint32_t obj) { uint32_t i = OIDX(obj); return i < (uint32_t)nsf || i == DEADSURF ? &sf[i] : NULL; }
 
 static int new_surface(uint32_t w, uint32_t h, const uint8_t *pfsrc, uint32_t caps, uint32_t caps2, int owner) {
     pthread_mutex_lock(&sl);
-    if (!sf) sf = calloc(MAXSURF, sizeof *sf);
-    if (nsf >= MAXSURF) { fprintf(stderr, "[dd] out of surfaces\n"); abort(); }
-    int i = nsf++;
+    if (!sf) { sf = calloc(MAXSURF + 1, sizeof *sf); freel = malloc(MAXSURF * sizeof *freel); sf[DEADSURF].owner = -1; }
+    int i;
+    if (nfree) i = freel[--nfree];
+    else if (nsf < MAXSURF) i = nsf++;
+    else { fprintf(stderr, "[dd] out of surfaces\n"); abort(); }
     pthread_mutex_unlock(&sl);
     Surf *s = &sf[i];
+    int gpu = s->gpu;           // a reused slot keeps its backend texture slot (re-uploaded: dirty)
     memset(s, 0, sizeof *s);
-    s->owner = owner; s->alive = 1; s->dirty = 1;
+    s->owner = owner; s->alive = 1; s->dirty = 1; s->gpu = gpu;
     SD(s, 0, 124);
     SD(s, 8, h); SD(s, 12, w);
     memcpy(s->d + 72, pfsrc, 32);
@@ -119,6 +124,13 @@ static void free_surface(int i) {
     gpu_surface_free(i);
     gfree(s->mem); live_surface_bytes -= s->size;
     s->mem = 0;
+    // the guest objects are not freed (the game may still hold a pointer); they now name the dead slot
+    P32(s->o7 + 8, DEADSURF);
+    if (s->o1) P32(s->o1 + 8, DEADSURF);
+    s->o7 = s->o1 = 0;
+    pthread_mutex_lock(&sl);
+    freel[nfree++] = i;
+    pthread_mutex_unlock(&sl);
 }
 static uint32_t surf_release(uint32_t o) {
     Surf *s = SU(o);
@@ -196,7 +208,7 @@ static void s_AddRef(CPU *c) { RET(c, com_addref(THIS(c)), 1); }
 static void s_Release(CPU *c) { RET(c, surf_release(THIS(c)), 1); }
 static void s_AddAttachedSurface(CPU *c) {
     Surf *s = SU(THIS(c)), *z = SU(ARG(c, 1));
-    if (s && z) { attach((int)(s - sf), (int)(z - sf)); if (s->nadded < 4) s->added[s->nadded++] = (int)(z - sf); com_addref(z->o7); }
+    if (s && z && s->alive && z->alive) { attach((int)(s - sf), (int)(z - sf)); if (s->nadded < 4) s->added[s->nadded++] = (int)(z - sf); com_addref(z->o7); }
     RET(c, DD_OK, 2);
 }
 static void s_DeleteAttachedSurface(CPU *c) { RET(c, DD_OK, 3); }
@@ -280,7 +292,12 @@ static void s_BltFast(CPU *c) {
     else if (src) { static int w; if (w++ < 3) fprintf(stderr, "[dd] BltFast between render targets not drawn\n"); }
     RET(c, DD_OK, 6);
 }
-static void s_Flip(CPU *c) { extern void optmenu_tick(CPU *); gpu_present(); stats_frame(); optmenu_tick(c); RET(c, DD_OK, 3); }
+static void s_Flip(CPU *c) {
+    extern void optmenu_tick(CPU *);
+    static int t = -1; static unsigned fr; if (t < 0) t = getenv("M1_TRACE_SURF") != NULL;
+    if (t && fr++ % 120 == 0) fprintf(stderr, "[dd] surface slots %d, free %d, live %d (%llu KB)\n", nsf, nfree, nsf - nfree, (unsigned long long)(live_surface_bytes >> 10));
+    gpu_present(); stats_frame(); optmenu_tick(c); RET(c, DD_OK, 3);
+}
 static void get_attached(CPU *c, int v1) {
     Surf *s = SU(THIS(c)); uint32_t capsp = ARG(c, 1), out = ARG(c, 2);
     uint32_t want = G32(capsp), want2 = v1 ? 0 : G32(capsp + 4);

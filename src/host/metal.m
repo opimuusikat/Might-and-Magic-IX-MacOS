@@ -560,9 +560,11 @@ static id<MTLTexture> tex_of(uint32_t obj) {
     s->dirty = 0;
     return t;
 }
+static int rb_last_s = -1; static uint64_t rb_last_gen;    // readback cache: surface last filled and rt_gen then
 void gpu_surface_free(int i) {
     if (!gpu_on()) return;
     LOCK
+    if (rb_last_s == i) rb_last_s = -1;          // the slot may be reused
     texpack_forget(i);
     rep_unbind(i);
     if (sf[i].gpu) { texs[sf[i].gpu - 1] = white; }
@@ -839,9 +841,8 @@ static id<MTLBuffer> rb_buf;
 void gpu_readback(int s) {
     if (!gpu_on() || !ready) return;
     LOCK
-    static int last_s = -1; static uint64_t last_gen;
     Surf *d = &sf[s];
-    if ((s == last_s && rt_gen == last_gen) || !d->mem || (SDESC(d, 76) & 4)) { UNLOCK return; }
+    if ((s == rb_last_s && rt_gen == rb_last_gen) || !d->mem || (SDESC(d, 76) & 4)) { UNLOCK return; }
     @autoreleasepool {
         if (pending_clear) begin_pass();
         end_pass();
@@ -880,7 +881,7 @@ void gpu_readback(int s) {
             }
         }
     }
-    last_s = s; last_gen = rt_gen;
+    rb_last_s = s; rb_last_gen = rt_gen;
     static int n; if (n++ < 3) fprintf(stderr, "[metal] back buffer read back into surface #%d (%ux%u, %u bits)\n", s, w, h, bits);
     UNLOCK
 }
