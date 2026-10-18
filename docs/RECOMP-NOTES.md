@@ -924,21 +924,25 @@ time with a 6 GB heap):
 - **Copyright line.** Done: `LICENSES/LICENSE.txt` names Joosep Joost.
 - **Where the zip goes.** Whether to ship the zip beside the Wine zip, and when: after the native
   10-minute play test, as planned.
-- **GitHub.** `native-builder/` is now a git repository, pushed to the private repo
-  https://github.com/opimuusikat/Might-and-Magic-IX-MacOS (1 commit, 49 files, author Joosep Joost
-  with the GitHub no-reply address). It is laid out like Fallout-NV-MacOS: README.md with the
-  bring-your-own-game disclaimer, LICENSE, `.gitignore`, a `.githooks/pre-commit` guard extended
-  with MM9's module types (enabled in the local clone), `.recomp.json`, and `docs/RECOMP-NOTES.md`
-  (this file with local paths removed; `dev/sync_from_m1.sh` refreshes it).
-  - **Before the push:** an audit of all 49 files found no tokens, keys, emails, local paths or
-    session identifiers.
-  - **Hashes and URLs:** every long hex string is a SHA-256 checksum, and every URL is a public
-    project or download page.
-  - **What the code can touch:** it opens no network connections (the Winsock/DirectPlay imports
-    are stubs that fail), and reads no credentials or keychain. The only program it starts is
-    `ffmpeg`, with a fixed argument list.
-  - **Making it public** is the owner's decision. After a sync, commit and push again; the guard
-    runs on every commit.
+- **GitHub.** `native-builder/` is a git repository, published (public) at
+  https://github.com/opimuusikat/Might-and-Magic-IX-MacOS. It is laid out like Fallout-NV-MacOS:
+  - README.md with the bring-your-own-game disclaimer, LICENSE and `.gitignore`;
+  - a `.githooks/pre-commit` guard extended with MM9's module types (enabled in the local clone);
+  - `.recomp.json`;
+  - `docs/RECOMP-NOTES.md`: this file, made by `dev/sync_from_m1.sh`, which drops local paths, the
+    test machine's model and OS version, and the build environment's sandbox notes.
+
+  **Before publishing:**
+  - An audit of every published file found no tokens, keys, emails, local paths or session
+    identifiers, and the leak check found no game bytes. Every long hex string is a SHA-256
+    checksum, and every URL is a public project or download page.
+  - The code opens no network connections (the Winsock/DirectPlay imports are stubs that fail) and
+    reads no credentials or keychain. The only program it starts is `ffmpeg`, with a fixed
+    argument list.
+  - The history was squashed into one clean commit, authored as Joosep Joost with the GitHub
+    no-reply address.
+
+  After a sync, commit with that identity and push; the guard runs on every commit.
 - **Keeping the sources in step.** After `m1/host` changes, run `native-builder/dev/sync_from_m1.sh`
   and then `dev/package.sh`. The reference hashes in `src/manifest.sh` change only if the Ghidra
   scripts, the rebase, Ghidra itself or the emitter's function set change.
