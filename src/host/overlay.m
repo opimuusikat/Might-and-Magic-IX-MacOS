@@ -70,9 +70,10 @@ static void overlay_key(int dik) {
 }
 // Returns 1 if the key event belongs to the overlay (not for the game). repeat: auto-repeat of a held key.
 int overlay_filter_key(int dik, int down, int repeat) {
-    (void)repeat;
     if (dik < 0 || dik > 255) return 0;
-    if (down) { if (!open_) return 0; swallowed[dik] = 1; overlay_key(dik); return 1; }
+    // A repeat of a key that went down to the game (pressed before the overlay opened) is ignored here and not marked,
+    // so its real key-up still reaches the game. A repeat of a key the overlay owns drives the overlay again.
+    if (down) { if (!open_ || (repeat && !swallowed[dik])) return 0; swallowed[dik] = 1; overlay_key(dik); return 1; }
     if (swallowed[dik]) { swallowed[dik] = 0; return 1; }
     return 0;
 }

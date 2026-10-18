@@ -280,7 +280,7 @@ static void s_BltFast(CPU *c) {
     else if (src) { static int w; if (w++ < 3) fprintf(stderr, "[dd] BltFast between render targets not drawn\n"); }
     RET(c, DD_OK, 6);
 }
-static void s_Flip(CPU *c) { gpu_present(); stats_frame(); RET(c, DD_OK, 3); }
+static void s_Flip(CPU *c) { extern void optmenu_tick(CPU *); gpu_present(); stats_frame(); optmenu_tick(c); RET(c, DD_OK, 3); }
 static void get_attached(CPU *c, int v1) {
     Surf *s = SU(THIS(c)); uint32_t capsp = ARG(c, 1), out = ARG(c, 2);
     uint32_t want = G32(capsp), want2 = v1 ? 0 : G32(capsp + 4);

@@ -230,13 +230,14 @@ static void make_menus(void) {
 }
 
 // Scale 0 = auto: backing pixel height of the main screen / H (1 offscreen); keep = value to use when auto cannot be resolved here.
+static int auto_cache;                 // last auto scale computed on the main thread (NSScreen is main-thread only)
 static int resolve_scale(int req, uint32_t h, int keep) {
     int sc = req;
     if (sc <= 0) {
         sc = 1;
         if (!getenv("M1_OFFSCREEN")) {
-            if ([NSThread isMainThread]) { NSScreen *scr = [NSScreen mainScreen]; if (scr) sc = (int)ceil(scr.frame.size.height * scr.backingScaleFactor / h); }
-            else sc = keep;
+            if ([NSThread isMainThread]) { NSScreen *scr = [NSScreen mainScreen]; if (scr) sc = (int)ceil(scr.frame.size.height * scr.backingScaleFactor / h); auto_cache = sc; }
+            else sc = auto_cache > 0 ? auto_cache : keep;
         }
     }
     return sc < 1 ? 1 : sc > 4 ? 4 : sc;
@@ -964,6 +965,7 @@ void gpu_settings_get(int *scale, int *msaa, int *aniso, int *tri, int *texrepla
 void host_maxfps_set(int fps) { persist_int(CFSTR("MaxFPS"), fps < 0 ? 0 : fps); }
 static void apply_settings(void) {
     if (!req.has) return;
+    if (layer && ![NSThread isMainThread]) return;      // layer.drawableSize / AppKit: stay pending until a main-thread present
     req.has = 0;
     int nsc = resolve_scale(req.scale, H, SC), nms = resolve_msaa(req.msaa);
     int nani = req.aniso < 1 ? 1 : req.aniso > 16 ? 16 : req.aniso, ntri = req.tri != 0, nrep = req.rep != 0, ndump = req.dump != 0;
@@ -975,8 +977,8 @@ static void apply_settings(void) {
     if (nms != MS) persist_int(CFSTR("MSAA"), nms);
     if (nani != ANI) persist_int(CFSTR("Anisotropy"), nani);
     if (ntri != TRI) persist_int(CFSTR("Trilinear"), ntri);
-    if (ch_t) { SC = nsc; MS = nms; make_targets(); memset(pso, 0, sizeof pso); }
-    if (ch_s) { ANI = nani; TRI = ntri; memset(samp, 0, sizeof samp); }
+    if (ch_t) { SC = nsc; MS = nms; make_targets(); for (int i = 0; i < 512; i++) pso[i] = nil; }
+    if (ch_s) { ANI = nani; TRI = ntri; for (int i = 0; i < 4096; i++) samp[i] = nil; }
     if (ch_r || ch_d) {
         for (NSNumber *k in [rhash allKeys]) rep_unbind(k.intValue);      // before replace goes off: release needs it on
         if (ch_r) { texpack_set_replace(nrep); persist_bool(CFSTR("TextureReplace"), nrep); }
@@ -991,7 +993,9 @@ int gpu_msaa_ok(int n) { return n <= 1 || (mdev && [mdev supportsTextureSampleCo
 static void overlay_draw(id<MTLCommandBuffer> cb, id<MTLTexture> target) {
     if (!overlay_is_open() || !ov_pso || !cb) return;
     int ver = overlay_version();
-    if (!ov_tex || ov_ver != ver || ov_sc != SC) {
+    BOOL stale = !ov_tex || ov_ver != ver || ov_sc != SC;
+    if (stale && layer && ![NSThread isMainThread]) { if (!ov_tex) return; stale = NO; }   // AppKit text only on the main thread; draw the old panel
+    if (stale) {
         uint8_t *px = overlay_render(SC);
         if (!px) return;
         int lw, lh; overlay_size(&lw, &lh);
@@ -1080,6 +1084,11 @@ static void mouse_btn(int b, int down) {
     if (down) { if (overlay_is_open()) return; fwd[b] = 1; input_mouse_button(b, 1); }
     else if (fwd[b]) { fwd[b] = 0; input_mouse_button(b, 0); }
 }
+static int mod_pending;
+static void sync_mods(NSEventModifierFlags f) {
+    input_key(0x2A, (f & NSEventModifierFlagShift) != 0); input_key(0x1D, (f & NSEventModifierFlagControl) != 0);
+    input_key(0x38, (f & NSEventModifierFlagOption) != 0);
+}
 static void handle_event(NSEvent *e) {
     switch (e.type) {
     case NSEventTypeKeyDown: case NSEventTypeKeyUp: {
@@ -1094,8 +1103,8 @@ static void handle_event(NSEvent *e) {
     }
     case NSEventTypeFlagsChanged: {
         NSEventModifierFlags f = e.modifierFlags;
-        input_key(0x2A, (f & NSEventModifierFlagShift) != 0); input_key(0x1D, (f & NSEventModifierFlagControl) != 0);
-        input_key(0x38, (f & NSEventModifierFlagOption) != 0);
+        if (overlay_is_open()) { mod_pending = 1; return; }       // synced on close (host_pump_events)
+        sync_mods(f);
         return;
     }
     case NSEventTypeMouseMoved: case NSEventTypeLeftMouseDragged: case NSEventTypeRightMouseDragged: case NSEventTypeOtherMouseDragged:
@@ -1121,6 +1130,7 @@ void host_pump_events(void) {
             CGAssociateMouseAndMouseCursorPosition(!key);
             if (key) [NSCursor hide]; else [NSCursor unhide];
         }
+        if (mod_pending && !overlay_is_open()) { mod_pending = 0; sync_mods([NSEvent modifierFlags]); }   // modifiers changed while the overlay was open
         NSEvent *e;
         while ((e = [NSApp nextEventMatchingMask:NSEventMaskAny untilDate:nil inMode:NSDefaultRunLoopMode dequeue:YES])) {
             BOOL shortcut = e.type == NSEventTypeKeyDown && (e.modifierFlags & NSEventModifierFlagCommand);

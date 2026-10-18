@@ -6,7 +6,20 @@ runs exactly as before. The menu frame is byte-identical to the build before the
 
 ## How to switch things on
 
-**In the game:** press **Cmd+,** (or choose *Settings…* in the app menu). A panel over the game picture
+**In the game's own menu:** Options → **Video Options** now has a second column with **HD Textures**,
+**Sharp Textures** (anisotropic 16x), **Smooth Mipmaps** (trilinear), **Resolution** (1x/2x/3x/4x/Auto),
+**Anti-aliasing** (Off/2x/4x/8x) and **Frame Rate** (60/120, next start). Click a row to change it, then
+**Apply** to use it, or **Cancel** to throw the change away. **Restore Default** resets these rows too.
+
+How it works: the host patches three slots of that screen's vtable (destructor, command, build). It does
+this only after checking that cshell is at its expected base and the slots hold their original values.
+It then adds the rows with the game's own control functions, so no generated code changes. The rows'
+text surfaces are cached, so clicking does not leak surfaces. The rows also follow changes made in the
+panel below.
+This was tested offscreen with scripted mouse clicks: Apply, Cancel, Restore Default, 50-click stress,
+the game's own Apply, and its render re-init.
+
+**Panel:** press **Cmd+,** (or choose *Settings…* in the app menu). A panel over the game picture
 lists the settings:
 - **Select and change:** ↑↓ selects a row, ←→ changes its value, Esc or Return closes the panel.
 - **When changes apply:** resolution, anti-aliasing, filtering and HD textures change immediately. The

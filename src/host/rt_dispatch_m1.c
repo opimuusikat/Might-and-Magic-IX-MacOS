@@ -44,6 +44,9 @@ void rt_call(CPU *c, uint32_t a) {
     rt_fallback(c, a);
 }
 
+// host hooks on spare addresses inside the code range (optmenu.c)
+void rt_register_fn(uint32_t a, GuestFn f) { if (a - 0x10000000u < 0x900000u) tab[1][a - 0x10000000u] = f; }
+
 int rt_has_fn(uint32_t a) { return fn_lookup(a) != NULL; }
 
 #ifdef RT_CALLTRACE
