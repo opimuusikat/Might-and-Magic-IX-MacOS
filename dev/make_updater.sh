@@ -11,6 +11,7 @@ VERSION="$(grep -m1 BUILDER_VERSION "$N/src/manifest.sh" | sed -E 's/.*="?([^"]*
 rm -rf "$APP" "$DMGSTAGE" "$DMG"; mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/builder"
 B="$APP/Contents/Resources/builder"
 cp -R "$N/src" "$N/LICENSES" "$N/README.txt" "$B/"
+cp "$N/CHANGELOG.md" "$B/CHANGELOG.md"
 cp "$N/installer/assets/logo.jpg" "$APP/Contents/Resources/logo.jpg"
 find "$B" \( -name '.DS_Store' -o -name '__pycache__' -o -name '._*' \) -prune -exec rm -rf {} +
 chmod +x "$B/src/build.sh"

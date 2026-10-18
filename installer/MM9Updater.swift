@@ -7,6 +7,19 @@ import SwiftUI
 let releasesPage = URL(string: "https://github.com/opimuusikat/Might-and-Magic-IX-MacOS/releases")!
 let bundledVersion = (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "1.0"
 
+/// The CHANGELOG.md section for this updater's version (heading "## <version>"), as plain lines; empty if none.
+func releaseNotes() -> [String] {
+    guard let res = Bundle.main.resourceURL,
+          let text = try? String(contentsOf: res.appendingPathComponent("builder/CHANGELOG.md"), encoding: .utf8) else { return [] }
+    var out: [String] = [], inSection = false
+    for raw in text.split(separator: "\n", omittingEmptySubsequences: true) {
+        let line = raw.trimmingCharacters(in: .whitespaces)
+        if line.hasPrefix("## ") { if inSection { break }; inSection = line.dropFirst(3).trimmingCharacters(in: .whitespaces) == bundledVersion; continue }
+        if inSection { out.append(line.hasPrefix("- ") ? "\u{2022} " + line.dropFirst(2) : line) }
+    }
+    return out
+}
+
 // MARK: - What `build.sh --status` says
 
 struct UStatus {
@@ -311,6 +324,15 @@ struct UpdaterRoot: View {
             VStack(alignment: .leading, spacing: 12) {
                 Text("Welcome to the Might and Magic IX Native Updater").font(tahoma(14, bold: true))
                 Text("This wizard checks which build of MM9 Native you have and brings it up to date with this updater's builder, version \(bundledVersion). Your saves, settings and HD textures stay.").font(tahoma())
+                let notes = releaseNotes()
+                if !notes.isEmpty {
+                    Text("What's new in \(bundledVersion):").font(tahoma(11, bold: true))
+                    SunkenBox {
+                        XPScroll { VStack(alignment: .leading, spacing: 3) {
+                            ForEach(0..<notes.count, id: \.self) { Text(notes[$0]).font(tahoma(11)) }
+                        }.padding(6).frame(maxWidth: .infinity, alignment: .leading) }
+                    }.frame(height: 90)
+                }
                 Spacer()
                 Text("Click Next to continue.").font(tahoma())
                 GitHubLink()
