@@ -37,7 +37,7 @@ final class Installer: ObservableObject {
     func refresh() {
         let fm = FileManager.default
         gameFolderPresent = fm.fileExists(atPath: gameCopy + "/lithtech.exe") || fm.fileExists(atPath: wineGame + "/lithtech.exe")
-        appInstalled = fm.fileExists(atPath: appPath)
+        appInstalled = fm.fileExists(atPath: appPath) && ProcessInfo.processInfo.environment["MM9I_PAGE"] == nil   // screenshots: a clean Mac
     }
 
     /// `path` is the GOG installer (.exe), a game folder, or nil to use the game already on this Mac.
@@ -73,7 +73,7 @@ struct ContentView: View {
     @State private var page: Page = {
         switch ProcessInfo.processInfo.environment["MM9I_PAGE"] { case "license": return .license; case "select": return .select; case "components": return .components; case "install", "done", "failed": return .install; default: return .welcome }
     }()
-    @State private var accepted = false
+    @State private var accepted = ProcessInfo.processInfo.environment["MM9I_PAGE"] != nil   // screenshots show the accepted state
     @State private var useExisting = false
     @State private var path = ""
     @State private var launch = true
@@ -142,7 +142,7 @@ struct ContentView: View {
     var license: some View {
         VStack(alignment: .leading, spacing: 10) {
             SunkenBox {
-                ScrollView {
+                XPScroll {
                     Text("""
                     For educational and research purposes only.
 
@@ -212,7 +212,7 @@ struct ContentView: View {
                 XPCheck(title: "Show details", on: $showDetails)
                 if showDetails {
                     SunkenBox {
-                        ScrollView { Text(inst.tail.suffix(60).joined(separator: "\n")).font(.system(size: 10, design: .monospaced))
+                        XPScroll { Text(inst.tail.suffix(60).joined(separator: "\n")).font(.system(size: 10, design: .monospaced))
                             .frame(maxWidth: .infinity, alignment: .leading).padding(4).textSelection(.enabled) }
                     }.frame(height: 90)
                 }
@@ -240,7 +240,7 @@ struct ContentView: View {
     func finishFailed(_ msg: String) -> some View {
         wizardPage("Setup failed", "The build stopped before it was finished.") {
             VStack(alignment: .leading, spacing: 8) {
-                SunkenBox { ScrollView { Text(msg).font(tahoma()).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading).padding(6) } }.frame(height: 130)
+                SunkenBox { XPScroll { Text(msg).font(tahoma()).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading).padding(6) } }.frame(height: 130)
                 HStack { XPButton(title: "Copy log") { inst.copyLog() }; XPButton(title: "Show log") { inst.showLog() } }
                 Text("If you ask for help, send the log. It holds tool output and file names only.").font(tahoma()).foregroundColor(Color(hex: 0x555555))
             }
@@ -301,6 +301,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 struct MM9InstallerApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var delegate
     init() {
+        // `--render-page out.png` (with MM9I_PAGE=welcome|license|select|components|install|done|failed): README screenshot, no window.
+        if let i = CommandLine.arguments.firstIndex(of: "--render-page"), i + 1 < CommandLine.arguments.count {
+            renderPNG(ContentView().environment(\.xpStatic, true), to: CommandLine.arguments[i + 1])
+            exit(0)
+        }
         if let i = CommandLine.arguments.firstIndex(of: "--render-icon"), i + 1 < CommandLine.arguments.count {
             let out = CommandLine.arguments[i + 1]
             let r = ImageRenderer(content: AppIconArt()); r.scale = 1

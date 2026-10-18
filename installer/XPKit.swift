@@ -99,7 +99,18 @@ extension Color {
         self.init(red: Double((hex >> 16) & 255) / 255, green: Double((hex >> 8) & 255) / 255, blue: Double(hex & 255) / 255)
     }
 }
-let xpBeige = Color(hex: 0xECE9D8), xpBlue = Color(hex: 0x0054E3), xpBorder = Color(hex: 0x0831D9)
+/// Colour scheme of the XP window parts. The installer keeps Luna Blue; the updater sets `.olive` (Luna Olive Green,
+/// "Homestead") once at start, before any view is built.
+enum XPTheme { case blue, olive }
+nonisolated(unsafe) var xpTheme: XPTheme = .blue
+private func themed(_ blue: UInt32, _ olive: UInt32) -> Color { Color(hex: xpTheme == .olive ? olive : blue) }
+let xpBeige = Color(hex: 0xECE9D8)
+var xpBorder: Color { themed(0x0831D9, 0x5E7B2C) }          // window frame
+var xpEdge: Color { themed(0x003C74, 0x3E5A1B) }            // button outline
+var xpFocus: Color { themed(0x6EA1F1, 0xA7C46A) }           // default-button inner ring
+var xpControlEdge: Color { themed(0x1C5180, 0x4F6B22) }     // radio and checkbox outline
+var xpListEdge: Color { themed(0x7F9DB9, 0xA2AE7E) }        // list and group box border
+var xpSelect: Color { themed(0x316AC5, 0x8DA85A) }          // selection / highlight
 func tahoma(_ size: CGFloat = 11, bold: Bool = false) -> Font { .custom(bold ? "Tahoma Bold" : "Tahoma", size: size) }
 func trebuchet(_ size: CGFloat) -> Font { .custom("Trebuchet MS Bold", size: size) }
 
@@ -114,8 +125,8 @@ struct XPButtonStyle: ButtonStyle {
                 RoundedRectangle(cornerRadius: 3).fill(LinearGradient(
                     colors: configuration.isPressed ? [Color(hex: 0xCECAB8), Color(hex: 0xE3E0D0)] : [.white, Color(hex: 0xECEBE5), Color(hex: 0xD6D0C5)],
                     startPoint: .top, endPoint: .bottom)))
-            .overlay(RoundedRectangle(cornerRadius: 3).stroke(enabled ? Color(hex: 0x003C74) : Color(hex: 0xC9C7BA), lineWidth: 1))
-            .overlay(RoundedRectangle(cornerRadius: 2).inset(by: 1.5).stroke(isDefault && enabled ? Color(hex: 0x6EA1F1) : .clear, lineWidth: 1.5))
+            .overlay(RoundedRectangle(cornerRadius: 3).stroke(enabled ? xpEdge : Color(hex: 0xC9C7BA), lineWidth: 1))
+            .overlay(RoundedRectangle(cornerRadius: 2).inset(by: 1.5).stroke(isDefault && enabled ? xpFocus : .clear, lineWidth: 1.5))
     }
 }
 struct XPButton: View {
@@ -130,7 +141,7 @@ struct XPRadio: View {
             HStack(spacing: 6) {
                 ZStack {
                     Circle().fill(LinearGradient(colors: [Color(hex: 0xDCDCD7), .white], startPoint: .topLeading, endPoint: .bottomTrailing))
-                    Circle().stroke(Color(hex: 0x1C5180), lineWidth: 1)
+                    Circle().stroke(xpControlEdge, lineWidth: 1)
                     if on { Circle().fill(Color(hex: 0x21A121)).frame(width: 5, height: 5) }
                 }.frame(width: 13, height: 13)
                 Text(title).font(tahoma()).foregroundColor(.black)
@@ -144,7 +155,7 @@ struct XPCheck: View {
         Button { if !locked { on.toggle() } } label: {
             HStack(spacing: 6) {
                 ZStack {
-                    Rectangle().fill(locked ? Color(hex: 0xECE9D8) : .white); Rectangle().stroke(locked ? Color(hex: 0xACA899) : Color(hex: 0x1C5180), lineWidth: 1)
+                    Rectangle().fill(locked ? Color(hex: 0xECE9D8) : .white); Rectangle().stroke(locked ? Color(hex: 0xACA899) : xpControlEdge, lineWidth: 1)
                     if on { Image(systemName: "checkmark").font(.system(size: 9, weight: .heavy)).foregroundColor(locked ? Color(hex: 0x8A8A8A) : Color(hex: 0x21A121)) }
                 }.frame(width: 13, height: 13)
                 Text(title).font(tahoma()).foregroundColor(locked ? Color(hex: 0x808080) : .black)
@@ -155,7 +166,7 @@ struct XPCheck: View {
 struct SunkenBox<Content: View>: View {
     @ViewBuilder var content: Content
     var body: some View {
-        content.background(Color.white).overlay(Rectangle().stroke(Color(hex: 0x7F9DB9), lineWidth: 1))
+        content.background(Color.white).overlay(Rectangle().stroke(xpListEdge, lineWidth: 1))
     }
 }
 struct TopRounded: Shape {   // rounded top corners only (UnevenRoundedRectangle needs macOS 14)
@@ -185,7 +196,7 @@ struct XPProgress: View {
                         let span = max(n - filled, 1)
                         let marching = running && i >= filled && abs((i - filled) - (t % (span + 4)) + 1) < 3
                         Rectangle()
-                            .fill(LinearGradient(colors: [Color(hex: 0x9BE69A), Color(hex: 0x2BC827), Color(hex: 0x9BE69A)], startPoint: .top, endPoint: .bottom))
+                            .fill(LinearGradient(colors: xpTheme == .olive ? [Color(hex: 0xD6E39A), Color(hex: 0x8FB12E), Color(hex: 0xD6E39A)] : [Color(hex: 0x9BE69A), Color(hex: 0x2BC827), Color(hex: 0x9BE69A)], startPoint: .top, endPoint: .bottom))
                             .opacity(i < filled || marching ? 1 : 0)
                             .frame(width: 8)
                     }
@@ -366,7 +377,9 @@ struct XPTitleBar: View {
             captionButton("xmark", red: true, action: onClose)
         }
         .padding(.horizontal, 6).frame(height: 30)
-        .background(LinearGradient(stops: [
+        .background(LinearGradient(stops: xpTheme == .olive ? [
+            .init(color: Color(hex: 0xC3D488), location: 0), .init(color: Color(hex: 0x9DB75A), location: 0.12),
+            .init(color: Color(hex: 0x8EA94C), location: 0.5), .init(color: Color(hex: 0x9CB65B), location: 0.9), .init(color: Color(hex: 0x6A8532), location: 1)] : [
             .init(color: Color(hex: 0x0997FF), location: 0), .init(color: Color(hex: 0x0053EE), location: 0.12),
             .init(color: Color(hex: 0x0050EE), location: 0.5), .init(color: Color(hex: 0x0066FF), location: 0.9), .init(color: Color(hex: 0x003DD7), location: 1)],
             startPoint: .top, endPoint: .bottom))
@@ -377,7 +390,7 @@ struct XPTitleBar: View {
                 .frame(width: 21, height: 21)
                 .background(RoundedRectangle(cornerRadius: 3).fill(red
                     ? LinearGradient(colors: [Color(hex: 0xE9886C), Color(hex: 0xC8381A)], startPoint: .top, endPoint: .bottom)
-                    : LinearGradient(colors: [Color(hex: 0x5C8EF5), Color(hex: 0x2253D8)], startPoint: .top, endPoint: .bottom)))
+                    : LinearGradient(colors: xpTheme == .olive ? [Color(hex: 0xB4C874), Color(hex: 0x6B8634)] : [Color(hex: 0x5C8EF5), Color(hex: 0x2253D8)], startPoint: .top, endPoint: .bottom)))
                 .overlay(RoundedRectangle(cornerRadius: 3).stroke(.white, lineWidth: 1))
         }.buttonStyle(.plain)
     }

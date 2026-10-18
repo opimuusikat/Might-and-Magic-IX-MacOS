@@ -135,10 +135,18 @@ you have and brings it up to date. Your game copy, saved games and settings stay
    cautious the first time).
 3. Click **Next >**. The updater shows what it found: your MM9 Native, which version built it, the game
    copy and your saves, the tools, and your Mac. It also says what will be updated and why.
+
+<p align="center"><img src="docs/img/updater-analysis.png" width="460" alt="Updater: what it found and what will be updated"></p>
 4. Click **Next >** again, leave the boxes as they are, and click **Update**. This takes a few minutes, up to
    25 on an older Mac. Keep the window open.
+
+<p align="center"><img src="docs/img/updater-components.png" width="460" alt="Updater: choose what to update"></p>
+
+<p align="center"><img src="docs/img/updater-install.png" width="460" alt="Updater: updating"></p>
 5. Click **Finish**. Before it changes anything, the updater copies your saved games to
    `~/Library/Application Support/MM9 Native/backups`. If the update fails, your old MM9 Native is left as it was.
+
+<p align="center"><img src="docs/img/updater-done.png" width="460" alt="Updater: finished"></p>
 
 ### Something went wrong?
 

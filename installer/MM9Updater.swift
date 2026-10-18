@@ -102,7 +102,7 @@ func sampleStatus(_ page: String) -> String {
     if page == "uptodate" {
         s = s.replacingOccurrences(of: "app_source=\n", with: "app_source=3f6a0c9d2b7e41a85c1d9e0f7a6b5c4d3e2f1a0b9c8d7e6f5a4b3c2d1e0f9a8b\n")
             .replacingOccurrences(of: "ffmpeg=update", with: "ffmpeg=ok").replacingOccurrences(of: "update_needed=yes", with: "update_needed=no")
-            .replacingOccurrences(of: "app_update=yes", with: "app_update=no")
+            .replacingOccurrences(of: "app_update=yes", with: "app_update=no").replacingOccurrences(of: "app_version=1.0", with: "app_version=\(bundledVersion)")
             .split(separator: "\n").filter { !$0.hasPrefix("reason=") }.joined(separator: "\n")
     }
     if page == "blocked" {
@@ -279,7 +279,7 @@ struct UpdaterRoot: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            XPTitleBar(title: "Might and Magic IX Native Update") { if m.runner.phase == .running { m.runner.cancel() }; NSApp.terminate(nil) }
+            XPTitleBar(title: "Might and Magic IX Native Updater") { if m.runner.phase == .running { m.runner.cancel() }; NSApp.terminate(nil) }
             ZStack {
                 xpBeige
                 VStack(spacing: 0) {
@@ -309,7 +309,7 @@ struct UpdaterRoot: View {
         HStack(spacing: 0) {
             Banner()
             VStack(alignment: .leading, spacing: 12) {
-                Text("Welcome to the Might and Magic IX Native Update Wizard").font(tahoma(14, bold: true))
+                Text("Welcome to the Might and Magic IX Native Updater").font(tahoma(14, bold: true))
                 Text("This wizard checks which build of MM9 Native you have and brings it up to date with this updater's builder, version \(bundledVersion). Your saves, settings and HD textures stay.").font(tahoma())
                 Spacer()
                 Text("Click Next to continue.").font(tahoma())
@@ -410,7 +410,7 @@ struct UpdaterRoot: View {
         return HStack(spacing: 0) {
             Banner(dawn: true, gameIcon: !app.isEmpty && FileManager.default.fileExists(atPath: app) ? NSWorkspace.shared.icon(forFile: app) : nil)
             VStack(alignment: .leading, spacing: 12) {
-                Text("Completing the Might and Magic IX Native Update Wizard").font(tahoma(14, bold: true))
+                Text("Completing the Might and Magic IX Native Updater").font(tahoma(14, bold: true))
                 Text("MM9 Native was updated to builder \(bundledVersion).").font(tahoma())
                 Text(m.backupDir.map { "Your saved games were backed up first, to \($0)." } ?? "No backup of the saved games was made. They were not touched.").font(tahoma()).foregroundColor(Color(hex: 0x555555))
                 Spacer()
@@ -505,6 +505,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 struct MM9UpdaterApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var delegate
     init() {
+        xpTheme = .olive   // Luna Olive Green for the updater; the installer stays Luna Blue
         let a = CommandLine.arguments
         if let i = a.firstIndex(of: "--render-icon"), i + 1 < a.count {
             renderPNG(UpdaterIconArt(), to: a[i + 1], scale: 1)
