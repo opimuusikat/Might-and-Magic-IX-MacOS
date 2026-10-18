@@ -108,8 +108,6 @@ int texpack_dump_on(void) { texpack_init(); return dump_on > 0; }
 int texpack_on(void) { if (dump_on < 0) texpack_init(); return dump_on > 0 || rep_on; }
 int texpack_replace_on(void) { return rep_on; }
 
-static void decode_dxt(const uint8_t *src, uint32_t w, uint32_t h, int fc, uint32_t *out);
-static void decode_raw(const uint8_t *src, size_t pitch, uint32_t w, uint32_t h, int fc, int keyed, uint32_t key, uint32_t *out);
 // ---- format / hash ---------------------------------------------------------------------------------
 static int fmt_code(const Surf *s) {
     uint32_t fl = SDESC(s, 76), cc = SDESC(s, 80), bits = SDESC(s, 84), rm = SDESC(s, 88), am = SDESC(s, 100);
@@ -162,24 +160,6 @@ uint64_t texpack_hash(const Surf *s, int root) {
     n_hashed++;
     // don't-care bits of formats without alpha are masked (they are not rendered, and may hold noise)
     uint64_t mask = fc == F_XRGB8888 ? 0x00FFFFFF00FFFFFFull : fc == F_XRGB1555 ? 0x7FFF7FFF7FFF7FFFull : fc == F_XRGB4444 ? 0x0FFF0FFF0FFF0FFFull : ~0ull;
-    return hash_rows(MEM + s->mem, rb, pt, rows, seed, mask);
-}
-// For the generated-mipmap path (metal.m): level 0 as RGBA8 (r | g<<8 | b<<16 | a<<24, straight alpha); returns the format code or -1.
-int texpack_decode0(const Surf *s, uint32_t *out) {
-    int fc = fmt_code(s); size_t rb, pt; uint32_t rows;
-    if (fc < 0 || !s->mem || !geom(s, fc, &rb, &pt, &rows)) return -1;
-    uint32_t w = SDESC(s, 12), h = SDESC(s, 8);
-    if (fc <= F_DXT5) decode_dxt(MEM + s->mem, w, h, fc, out); else decode_raw(MEM + s->mem, pt, w, h, fc, 0, 0, out);
-    return fc;
-}
-// Content hash regardless of the dump/replace switches and the dynamic marks (change detection only).
-uint64_t texpack_hash_any(const Surf *s) {
-    int sv = dump_on; if (sv < 0) sv = 0;
-    int fc = fmt_code(s); size_t rb, pt; uint32_t rows;
-    if (fc < 0 || !s->mem || !geom(s, fc, &rb, &pt, &rows)) return 0;
-    uint64_t seed = (uint64_t)SDESC(s, 12) | (uint64_t)SDESC(s, 8) << 16 | (uint64_t)fc << 32;
-    uint64_t mask = fc == F_XRGB8888 ? 0x00FFFFFF00FFFFFFull : fc == F_XRGB1555 ? 0x7FFF7FFF7FFF7FFFull : fc == F_XRGB4444 ? 0x0FFF0FFF0FFF0FFFull : ~0ull;
-    (void)sv;
     return hash_rows(MEM + s->mem, rb, pt, rows, seed, mask);
 }
 void texpack_forget(int root) { if (root < trk_n) memset(&trk[root], 0, sizeof(Track)); }

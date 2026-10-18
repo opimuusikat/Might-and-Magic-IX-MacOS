@@ -9,21 +9,17 @@
 
 int gpu_msaa_ok(int n);
 
-#define NROWS 10
-#define R_GM 4
-#define R_A2C 5
-#define R_FPS 8
-#define R_CLOSE 9
+#define NROWS 8
 static volatile int open_, sel, version = 1;
 static int val[NROWS];                  // index into the option list of each row
 static uint8_t swallowed[256];          // keys whose down went to the overlay: their up is swallowed too
 
-static const char *const labels[NROWS] = {"Resolution", "Anti-aliasing", "Anisotropic filtering", "Trilinear filtering", "Generated mipmaps", "Alpha to coverage",
-                                          "HD textures (replace)", "Dump textures", "Frame rate cap (after restart)", "Close"};
-static int nopt(int row) { return row == 0 ? 5 : row == 1 ? 4 : row == 2 ? 5 : row == R_CLOSE ? 0 : 2; }
+static const char *const labels[NROWS] = {"Resolution", "Anti-aliasing", "Anisotropic filtering", "Trilinear filtering", "HD textures (replace)",
+                                          "Dump textures", "Frame rate cap (after restart)", "Close"};
+static int nopt(int row) { return row == 0 ? 5 : row == 1 ? 4 : row == 2 ? 5 : row == 6 ? 2 : row == 7 ? 0 : 2; }
 static int optval(int row, int i) {     // the setting value of option i
     static const int res[] = {1, 2, 3, 4, 0}, aa[] = {1, 2, 4, 8}, an[] = {1, 2, 4, 8, 16}, fps[] = {60, 120};
-    switch (row) { case 0: return res[i]; case 1: return aa[i]; case 2: return an[i]; case R_FPS: return fps[i]; default: return i; }
+    switch (row) { case 0: return res[i]; case 1: return aa[i]; case 2: return an[i]; case 6: return fps[i]; default: return i; }
 }
 static NSString *optname(int row, int i) {
     int v = optval(row, i);
@@ -31,17 +27,17 @@ static NSString *optname(int row, int i) {
     case 0: return v ? [NSString stringWithFormat:@"%dx", v] : @"Auto";
     case 1: return v == 1 ? @"Off" : [NSString stringWithFormat:@"%dx", v];
     case 2: return v == 1 ? @"Off" : [NSString stringWithFormat:@"%dx", v];
-    case R_FPS: return [NSString stringWithFormat:@"%d", v];
+    case 6: return [NSString stringWithFormat:@"%d", v];
     default: return v ? @"On" : @"Off";
     }
 }
 static int find_opt(int row, int v) { for (int i = 0; i < nopt(row); i++) if (optval(row, i) == v) return i; return 0; }
 static void load_values(void) {
-    int sc, ms, an, tri, rep, dump, gm, a2c;
-    gpu_settings_get(&sc, &ms, &an, &tri, &rep, &dump, NULL); gpu_settings_get2(&gm, &a2c);
+    int sc, ms, an, tri, rep, dump;
+    gpu_settings_get(&sc, &ms, &an, &tri, &rep, &dump, NULL);
     int mf = host_maxfps_setting();
     val[0] = find_opt(0, sc); val[1] = find_opt(1, ms); val[2] = find_opt(2, an);
-    val[3] = tri ? 1 : 0; val[R_GM] = gm ? 1 : 0; val[R_A2C] = a2c ? 1 : 0; val[6] = rep ? 1 : 0; val[7] = dump ? 1 : 0; val[R_FPS] = find_opt(R_FPS, mf == 120 ? 120 : 60);
+    val[3] = tri ? 1 : 0; val[4] = rep ? 1 : 0; val[5] = dump ? 1 : 0; val[6] = find_opt(6, mf == 120 ? 120 : 60);
 }
 int overlay_is_open(void) { return open_; }
 int overlay_version(void) { return version; }
@@ -50,7 +46,7 @@ void overlay_toggle(void) {
     open_ = !open_; version++;
 }
 static void change(int dir) {
-    int r = sel; if (r >= R_CLOSE) return;
+    int r = sel; if (r >= 7) return;
     int n = nopt(r); val[r] = (val[r] + dir + n) % n;
     int v = optval(r, val[r]);
     if (r == 1 && v > 1) {               // skip unsupported MSAA counts
@@ -58,15 +54,15 @@ static void change(int dir) {
         v = optval(1, val[1]);
     }
     switch (r) { case 0: gpu_settings_set_one(1, v); break; case 1: gpu_settings_set_one(2, v); break; case 2: gpu_settings_set_one(3, v); break;
-    case 3: gpu_settings_set_one(4, v); break; case R_GM: gpu_settings_set_one(7, v); break; case R_A2C: gpu_settings_set_one(8, v); break;
-    case 6: gpu_settings_set_one(5, v); break; case 7: gpu_settings_set_one(6, v); break; case R_FPS: host_maxfps_set(v); break; }
+    case 3: gpu_settings_set_one(4, v); break; case 4: gpu_settings_set_one(5, v); break; case 5: gpu_settings_set_one(6, v); break;
+    case 6: host_maxfps_set(v); break; }
 }
 static void overlay_key(int dik) {
     switch (dik) {
     case 0xC8: sel = (sel + NROWS - 1) % NROWS; break;
     case 0xD0: sel = (sel + 1) % NROWS; break;
     case 0xCB: change(-1); break;
-    case 0xCD: if (sel == R_CLOSE) open_ = 0; else change(1); break;
+    case 0xCD: if (sel == 7) open_ = 0; else change(1); break;
     case 0x01: case 0x1C: case 0x9C: open_ = 0; break;
     default: return;
     }
@@ -83,9 +79,9 @@ int overlay_filter_key(int dik, int down, int repeat) {
 }
 
 // Panel bitmap: 420x300 logical units at `scale` pixels per unit, BGRA8 premultiplied. Caller frees *px.
-void overlay_size(int *w, int *h) { *w = 420; *h = 340; }
+void overlay_size(int *w, int *h) { *w = 420; *h = 300; }
 uint8_t *overlay_render(int scale) {
-    int lw = 420, lh = 340, pw = lw * scale, ph = lh * scale;
+    int lw = 420, lh = 300, pw = lw * scale, ph = lh * scale;
     uint8_t *px = calloc((size_t)pw * ph, 4);
     if (!px) return NULL;
     CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
@@ -109,9 +105,9 @@ uint8_t *overlay_render(int scale) {
                 NSBezierPath *hl = [NSBezierPath bezierPathWithRoundedRect:NSMakeRect(12, y - 2, lw - 24, 24) xRadius:5 yRadius:5];
                 [[NSColor colorWithCalibratedRed:0.20 green:0.42 blue:0.85 alpha:0.75] setFill]; [hl fill];
             }
-            NSColor *col = (r == R_FPS && r != sel) ? dim : fg;
+            NSColor *col = (r == 6 && r != sel) ? dim : fg;
             [@(labels[r]) drawAtPoint:NSMakePoint(24, y + 1) withAttributes:@{NSFontAttributeName: rf, NSForegroundColorAttributeName: col}];
-            if (r < R_CLOSE) {
+            if (r < 7) {
                 NSString *v = [NSString stringWithFormat:@"‹ %@ ›", optname(r, val[r])];
                 [v drawInRect:NSMakeRect(lw / 2, y + 1, lw / 2 - 24, 20) withAttributes:@{NSFontAttributeName: rf, NSForegroundColorAttributeName: col, NSParagraphStyleAttributeName: ps}];
             }
