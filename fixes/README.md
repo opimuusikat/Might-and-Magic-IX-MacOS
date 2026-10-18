@@ -10,3 +10,11 @@ with a new `BUILDER_VERSION`. Variants name the builder they were made for and a
 
 Make one with `dev/fix.sh` (see the top of that script), then commit and push this folder.
 The files are downloaded from the `main` branch and checked against the SHA-256 in `index.json` before use.
+
+## Fast rebuilds
+
+After a full build the builder keeps the compiled game code (`relink/` in its tool folder, a few hundred MB;
+delete the folder any time). A fix variant only changes `host/`, so with that kept code the updater skips
+Ghidra, the translation and the compile, and just compiles `host/` and links: a minute or two instead of
+5 to 30. The kept code is tied to everything under `src/` except `host/`, so a change to the recompiler or
+`build.sh` makes the next build a full one again. `MM9N_FULL_REBUILD=1` forces that, `MM9N_RELINK=0` stops it being kept.

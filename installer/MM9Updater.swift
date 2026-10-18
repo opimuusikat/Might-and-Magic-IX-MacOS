@@ -496,8 +496,10 @@ struct UpdaterRoot: View {
                 }
             }
             Spacer(minLength: 0)
-            Text(m.selectedFix == m.installedFix ? "Nothing changes in the bug fixes." : "Switching variant rebuilds the app (5 to 30 minutes). Your saves stay.")
-                .font(tahoma()).foregroundColor(Color(hex: 0x555555))
+            Text(m.selectedFix == m.installedFix ? "Nothing changes in the bug fixes."
+                 : m.status?["relink_cache"] == "ok" ? "Switching variant takes a minute or two: the compiled game code from your last build is reused. Your saves stay."
+                 : "Switching variant rebuilds the app, 5 to 30 minutes this time. The compiled game code is then kept, so later switches take a minute or two. Your saves stay.")
+                .font(tahoma()).foregroundColor(Color(hex: 0x555555)).fixedSize(horizontal: false, vertical: true)
         }
     }
 

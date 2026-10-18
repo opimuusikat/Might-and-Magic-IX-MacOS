@@ -25,6 +25,7 @@
 #   MM9N_KEEP_WORK=1  keep the 1 GB of intermediate files after a successful build
 #   MM9N_JOBS, MM9N_GHIDRA_JOBS, MM9N_GHIDRA_MAXMEM   parallelism and Ghidra's Java heap
 #   MM9N_SKIP_SMOKETEST=1  do not start the game once at the end
+#   MM9N_FULL_REBUILD=1  ignore the kept compiled game code and rebuild everything; MM9N_RELINK=0  do not keep it
 #   MM9N_FIX       in-game bug-fix variant: auto (default; newest stable of the last 5), none, or a variant id
 #   MM9N_FFMPEG_DOWNLOAD=1  also download ffmpeg (28 MB, SHA-256 checked) so the intro movies play
 #
@@ -84,6 +85,20 @@ source_hash() {
     while IFS= read -r f; do printf '%s  %s\n' "$(sha "$f")" "$f"; done ) | /usr/bin/shasum -a 256 | cut -d' ' -f1
 }
 if [ "${1:-}" = "--source-hash" ]; then source_hash; exit 0; fi
+
+# The compiled game code (the five modules translated to C and compiled, plus the merged function table) depends on the
+# recompiler, the tools and build.sh, but not on src/host/. So after one full build it is kept in $RELINK, and a rebuild that
+# only differs in src/host/ (a bug-fix variant) skips Ghidra, the translation and the compile, and just compiles host/ and links.
+# The key is the hash of everything under src/ except host/.
+RELINK="$CACHE/relink"
+relink_key() {
+  ( cd "$SRC" && /usr/bin/find . -type f ! -name .DS_Store ! -name '._*' ! -path '*/__pycache__/*' ! -path './host/*' | sed 's|^\./||' | LC_ALL=C sort |
+    while IFS= read -r f; do printf '%s  %s\n' "$(sha "$f")" "$f"; done ) | /usr/bin/shasum -a 256 | cut -d' ' -f1
+}
+relink_cache_ok() {
+  [ "$(sed -n 's/^key=//p' "$RELINK/meta" 2>/dev/null)" = "$(relink_key)" ] && [ -s "$RELINK/table.o" ] || return 1
+  local m; for m in $MODULES; do ls "$RELINK/obj/${m//./_}"/*.o > /dev/null 2>&1 || return 1; done
+}
 
 # ---------------------------------------------------------------------------------------------
 # In-game bug-fix variants live in the repository's fixes/ folder (fixes/index.json plus fixes/<id>/host/...), not in this
@@ -150,6 +165,7 @@ if [ "${1:-}" = "--status" ]; then
   }
   tg=$(tstate ghidra "$GHIDRA_SHA"); tj=$(tstate jdk "$JDK_SHA"); tu=$(tstate unicorn "$UNICORN_SHA")
   kv tools_ghidra "$tg"; kv tools_jdk "$tj"; kv tools_unicorn "$tu"
+  if relink_cache_ok; then kv relink_cache ok; kv relink_mb "$(( ($(du -sk "$RELINK" 2>/dev/null | cut -f1) + 512) / 1024 ))"; else kv relink_cache none; fi
   FF="$asup/tools/ffmpeg"; ff=missing
   if [ -x "$FF" ]; then if [ "$(cat "$FF.zip.sha" 2>/dev/null)" = "$FFMPEG_SHA" ]; then ff=ok; else ff=update; fi; fi
   kv ffmpeg $ff
@@ -265,7 +281,10 @@ GH_HEAP="${MM9N_GHIDRA_MAXMEM:-$GH_HEAP}"
 GJ=$(( MEM_GB / 12 )); [ "$GJ" -lt 1 ] && GJ=1; [ "$GJ" -gt 3 ] && GJ=3
 GJ="${MM9N_GHIDRA_JOBS:-$GJ}"
 free_gb() { df -k "$1" 2>/dev/null | awk 'NR == 2 { print int($4 / 1048576) }'; }
+FAST=0
+if [ "${MM9N_FULL_REBUILD:-0}" != 1 ] && relink_cache_ok; then FAST=1; fi
 need=2; [ -f "$CACHE/.tools-$BUILDER_VERSION" ] || need=4
+[ "$FAST" = 1 ] && need=1
 mkdir -p "$CACHE" || fail "Cannot create $CACHE"
 [ "$(free_gb "$SUPPORT")" -ge "$need" ] || fail "Not enough free disk space: the build needs about $need GB free on the disk that holds $SUPPORT."
 [ "$(free_gb "$CACHE")" -ge "$need" ] || fail "Not enough free disk space: the build needs about $need GB free on the disk that holds $CACHE."
@@ -430,16 +449,19 @@ fetch() {
   rm -rf "$CACHE/unpack" "$file"
   echo "$want" > "$CACHE/$name/.ok"
 }
-fetch ghidra "$GHIDRA_URL" "$GHIDRA_SHA" zip "$GHIDRA_TOP"
-fetch jdk "$JDK_URL" "$JDK_SHA" tgz "$JDK_TOP"
+if [ "$FAST" != 1 ]; then   # a fast rebuild only links, so it needs neither Ghidra nor Java
+  fetch ghidra "$GHIDRA_URL" "$GHIDRA_SHA" zip "$GHIDRA_TOP"
+  fetch jdk "$JDK_URL" "$JDK_SHA" tgz "$JDK_TOP"
+fi
 fetch unicorn "$UNICORN_URL" "$UNICORN_SHA" wheel unicorn
 rmdir "$CACHE/downloads" 2>/dev/null
 GH="$CACHE/ghidra"
 JAVA_HOME="$CACHE/jdk/Contents/Home"
 UNICORN="$CACHE/unicorn"
+[ -f "$UNICORN/lib/libunicorn.a" ] || fail "Unicorn is incomplete in $UNICORN. Delete $CACHE and run the builder again."
+if [ "$FAST" != 1 ]; then
 [ -x "$GH/support/analyzeHeadless" ] || fail "Ghidra is incomplete in $GH. Delete $CACHE and run the builder again."
 [ -x "$JAVA_HOME/bin/java" ] || fail "Java is incomplete in $CACHE/jdk. Delete $CACHE and run the builder again."
-[ -f "$UNICORN/lib/libunicorn.a" ] || fail "Unicorn is incomplete in $UNICORN. Delete $CACHE and run the builder again."
 # Ghidra's release zip has no Apple Silicon build of its native decompiler, and without it Ghidra
 # silently skips switch-table recovery (a different, untested analysis). Build it from the C++
 # sources in the zip (about 15 s), as Homebrew's Ghidra does.
@@ -461,6 +483,7 @@ export GH JAVA_HOME WORK LOGDIR SRC GHIDRA_USER
 export PATH="$JAVA_HOME/bin:$PATH"
 export GHIDRA_HEADLESS_MAXMEM="$GH_HEAP"
 "$JAVA_HOME/bin/java" -version >> "$LOG" 2>&1 || fail "The Java runtime does not start."
+fi
 if [ "${MM9N_FFMPEG_DOWNLOAD:-0}" = 1 ]; then   # optional: movie support
   FF="$SUPPORT/tools/ffmpeg"
   if [ -x "$FF" ] && [ "$(cat "$FF.zip.sha" 2>/dev/null)" = "$FFMPEG_SHA" ]; then say "ffmpeg: already here"
@@ -489,6 +512,14 @@ for m in $MODULES; do
 done
 done_step "cshell.dll, object.lto and clientfx.fxd moved to their own addresses"
 
+INC="$SRC/recomp"; export INC   # also used by the link step
+if [ "$FAST" = 1 ]; then
+# ---------------------------------------------------------------------------------------------
+  step "Reusing the compiled game code from your last build (fast rebuild: Ghidra, translation and compile are skipped)"
+  GHIDRA_MATCH="$(sed -n 's/^ghidra=//p' "$RELINK/meta")"; nfn="$(sed -n 's/^functions=//p' "$RELINK/meta")"
+  STEPNO=$((STEPNO + 2)); OBJROOT="$RELINK/obj"
+  done_step "$nfn functions already compiled ($(du -sh "$RELINK" | cut -f1) kept in $RELINK)"
+else
 # ---------------------------------------------------------------------------------------------
 step "Analysing the code with Ghidra (5 modules, $GJ at a time; the longest step)"
 say "Java heap $GH_HEAP per module; logs: $LOGDIR/ghidra-*.log"
@@ -555,13 +586,21 @@ for m in $MODULES; do
 done
 done_step
 
+OBJROOT="$WORK/obj"
+fi
+
 # ---------------------------------------------------------------------------------------------
 step "Linking"
 B="$WORK/link"; rm -rf "$B"; mkdir -p "$B/host" "$WORK/bin"
+if [ "$FAST" = 1 ]; then
+  cp "$RELINK/table.o" "$B/table.o" || fail "The saved function table is missing. Run the builder again with MM9N_FULL_REBUILD=1."
+  TABLE_MATCH="$(sed -n 's/^table=//p' "$RELINK/meta")"
+else
 gens=(); for m in $MODULES; do gens+=("$WORK/gen/${m//./_}"); done
 logrun "$PY" -I "$SRC/tools/merge_tables.py" "$B/table.c" "${gens[@]}" || fail "Merging the function tables failed."
 if [ "$(sha "$B/table.c")" = "$REF_TABLE_SHA" ]; then TABLE_MATCH="identical to the reference build"; else TABLE_MATCH="DIFFERS from the reference build"; fi
 logrun /usr/bin/xcrun clang -arch arm64 -O1 -w -I"$INC" -DRT_FIXED_MEM -c "$B/table.c" -o "$B/table.o" || fail "Compiling the function table failed."
+fi
 for f in "$HOSTDIR"/*.c; do
   logrun /usr/bin/xcrun clang -arch arm64 -O2 -g -Wall -Wno-unused-function -I"$HOSTDIR" -I"$INC" -I"$UNICORN/include" \
     -c "$f" -o "$B/host/$(basename "$f" .c).o" || fail "Compiling the runtime ($(basename "$f")) failed."
@@ -570,7 +609,7 @@ for f in "$HOSTDIR"/*.m; do
   logrun /usr/bin/xcrun clang -arch arm64 -O2 -g -fobjc-arc -Wall -I"$HOSTDIR" -I"$INC" \
     -c "$f" -o "$B/host/$(basename "$f" .m).o" || fail "Compiling the runtime ($(basename "$f")) failed."
 done
-find "$WORK/obj" -name '*.o' > "$B/objs.txt"
+find "$OBJROOT" -name '*.o' > "$B/objs.txt"
 logrun /usr/bin/xcrun clang -arch arm64 -o "$WORK/bin/mm9native" -filelist "$B/objs.txt" "$B/table.o" "$B"/host/*.o \
   "$UNICORN/lib/libunicorn.a" -framework Metal -framework QuartzCore -framework AppKit -framework ImageIO \
   -framework UniformTypeIdentifiers -framework CoreGraphics -framework AudioToolbox -framework CoreAudio \
@@ -687,7 +726,7 @@ step "Installing the app and cleaning up"
   echo "Ghidra 12.1.4, Temurin $JDK_TOP, Unicorn 2.1.4"; echo "Ghidra output: $GHIDRA_MATCH"
   echo "function table ($nfn functions): $TABLE_MATCH"; echo "smoke test: $SMOKE"; echo "game copy: $GAME"
   echo "builder-version: $BUILDER_VERSION"; echo "builder-source: $SRC_HASH"; echo "built-unix: $(date +%s)"
-  echo "fix-id: ${FIX_ID:-none}"; echo "fix-title: ${FIX_TITLE:-}"
+  echo "fix-id: ${FIX_ID:-none}"; echo "fix-title: ${FIX_TITLE:-}"; echo "build-mode: $([ "$FAST" = 1 ] && echo fast || echo full)"
   if [ -x "$SUPPORT/tools/ffmpeg" ] && [ "$(cat "$SUPPORT/tools/ffmpeg.zip.sha" 2>/dev/null)" = "$FFMPEG_SHA" ]; then echo "ffmpeg: $FFMPEG_SHA"; else echo "ffmpeg: none"; fi; } > "$A/$MARKER"
 logrun /usr/bin/codesign --force --sign - "$A" || fail "Signing the app failed."
 logrun /usr/bin/codesign --verify --deep --strict "$A" || fail "The app's signature does not verify."
@@ -699,6 +738,14 @@ if [ -e "$DEST" ]; then
 fi
 mv "$A" "$DEST" || fail "Cannot move the app to $APPDIR."
 cp "$DEST/$MARKER" "$LOGDIR/build-info.txt"
+if [ "$FAST" != 1 ] && [ "${MM9N_RELINK:-1}" = 1 ]; then   # keep the compiled game code for fast bug-fix rebuilds
+  rm -rf "$RELINK.new"; mkdir -p "$RELINK.new"
+  if { [ "${MM9N_KEEP_WORK:-0}" = 1 ] && cp -R "$WORK/obj" "$RELINK.new/obj" || mv "$WORK/obj" "$RELINK.new/obj"; } && cp "$B/table.o" "$RELINK.new/table.o"; then
+    { echo "key=$(relink_key)"; echo "ghidra=$GHIDRA_MATCH"; echo "functions=$nfn"; echo "table=$TABLE_MATCH"; } > "$RELINK.new/meta"
+    rm -rf "$RELINK"; mv "$RELINK.new" "$RELINK"
+    say "kept the compiled game code ($(du -sh "$RELINK" | cut -f1)) in $RELINK: bug-fix updates can now skip the long steps"
+  else rm -rf "$RELINK.new"; say "note: the compiled game code could not be kept; the next update will rebuild everything"; fi
+fi
 if [ "${MM9N_KEEP_WORK:-0}" = 1 ]; then
   done_step "$DEST (kept the intermediate files in $WORK)"
 else
