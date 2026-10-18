@@ -7,7 +7,19 @@ version on its welcome page. Keep each line short and in plain words, one fix pe
 To ship a fix: change the code, add a line here, bump `BUILDER_VERSION`, run `dev/make_updater.sh`
 (and the installer script), then publish a GitHub release with a higher tag.
 
+## 1.2
+
+- New: MM9 Native Uninstaller (red window). Moves MM9 Native, its tools and settings to the Trash; your saved games stay unless you tick them.
+- The uninstaller can also remove the Wine version of the game, only if you tick it.
+- The updater is now a green window, so you can tell it apart from the blue installer.
+- The updater shows what is new in its version on its first page.
+- The updater lets you choose an in-game bug-fix version from the last 5 published.
+- Switching bug-fix version takes a minute or two: the compiled game code from your last build is kept and reused.
+
 ## 1.1
 
-- Fixes go here, one per line. Replace this line with what changed in 1.1.
-- New: MM9 Native Uninstaller (red window). Moves MM9 Native, its tools and settings to the Trash; the Wine version and saved games only if ticked.
+- Graphics options in the game: Options > Video Options has Resolution, Anti-aliasing, Sharp Textures, Smooth Mipmaps, HD Textures and Frame Rate. Cmd+, opens them over the game.
+- HD textures load by the texture's file name; you can make your own pack from your copy of the game.
+- Original Textures option: 32-bit textures stay 32-bit.
+- Fixed: long play sessions could stop the game because texture slots were never reused.
+- Fixed: Direct3D cull mode and colour-key render state are now handled.
