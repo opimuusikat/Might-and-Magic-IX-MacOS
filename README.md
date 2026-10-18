@@ -147,6 +147,31 @@ do not need the GOG installer again. Your saved games and settings stay.
 `~/Library/Application Support/MM9 Native/backups`. If the update fails, your old MM9 Native stays as it was.
 Click **Try Again**, or **Copy log** and [open an issue](https://github.com/opimuusikat/Might-and-Magic-IX-MacOS/issues).
 
+### How to uninstall
+
+To remove MM9 Native, use the **uninstaller**, the **red** window. It finds what the installer and updater put
+on your Mac and moves it to the **Trash**, so you can still put things back until you empty it. Your saved
+games stay unless you tick them too.
+
+<p align="center"><img src="docs/img/uninstaller-components.png" width="460" alt="MM9 Native Uninstaller: choose what to remove"></p>
+
+1. On the [Releases page](https://github.com/opimuusikat/Might-and-Magic-IX-MacOS/releases/latest), download
+   **`MM9-Native-Uninstaller.dmg`** and open it.
+2. Start **MM9 Native Uninstaller**. The first time, macOS is cautious, just as with the installer (see Step 3
+   above). If the game is running, the uninstaller asks you to quit it first.
+3. Click **Next >**. Tick what to remove; each line shows how much space it takes:
+   - **MM9 Native app**: the game in `~/Applications` (or `/Applications`).
+   - **Game copy, logs and build files**: `~/Library/Application Support/MM9 Native`, except your saves.
+   - **Also remove my saved games**: off at first. Leave it off and your saved games, `autoexec.cfg`, HD textures
+     and the updater's save backups stay where they are, so a later reinstall finds them again.
+   - **Build tools**: Ghidra, Java 21 and Unicorn in `~/Library/Application Support/MM9 Native Builder`.
+   - **Game settings**: the graphics and window options (`local.mm9-native`).
+4. Click **Uninstall**, then **Finish**. Empty the Trash to free the space (**Open Trash** opens it for you).
+
+The uninstaller never touches the Wine version of the game (`Might and Magic IX.app` and its folder) or your
+GOG installer. It only removes an `MM9 Native.app` that the builder made. You can delete the installer, updater
+and uninstaller apps themselves by dragging them to the Trash.
+
 ### Something went wrong?
 
 | What you see | What to do |
@@ -279,8 +304,8 @@ The full engineering notes, with measurements, are in [`docs/RECOMP-NOTES.md`](d
 | `src/recomp/` | `rt.h`, the emitter and flag-liveness pass (from Fallout-NV-MacOS, with fixes) |
 | `src/ghidra_scripts/` | the Fallout-NV-MacOS Ghidra scripts used by the build |
 | `src/tools/` | rebase, dispatch-table merge, icon tools |
-| `installer/` | the Windows XP style installer app (SwiftUI) and its logo |
-| `dev/` | maintainer tools: packaging with a leak check, building the installer app and `.dmg`, source sync |
+| `installer/` | the Windows XP style installer (blue), updater (green) and uninstaller (red) apps (SwiftUI) and their logo |
+| `dev/` | maintainer tools: packaging with a leak check, building the installer, updater and uninstaller apps and their `.dmg`s, source sync |
 | `docs/img/` | screenshots for this README |
 | `docs/RECOMP-NOTES.md` | feasibility study, milestones and measurements |
 
