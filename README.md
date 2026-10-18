@@ -68,22 +68,37 @@ You only have to do this once. Next time it opens normally.
 
 ### Step 4: Follow the windows (it looks like an old Windows XP installer)
 
-<p align="center">
-<img src="docs/img/installer-welcome.png" width="420" alt="Welcome window">
-&nbsp;
-<img src="docs/img/installer-select.png" width="420" alt="Select your game window">
-</p>
+**1. Welcome.** Click **Next >**.
 
-1. Click **Next >** on the first page.
-2. Read the notice, click **I accept the terms of this notice**, then **Next >**.
-3. Click **Browse…** and pick the `setup_might_and_magic_9_….exe` file from your **Downloads** folder.
-   (Shortcut: you can also drag the file onto the window.) Then click **Install**.
-4. **Wait.** A green bar shows the progress. This takes about 3 minutes on a fast Mac and up to 25
-   minutes on an older one. **Keep the window open and do not close the lid.** You can click **Show details** if you are curious.
-   - If a message asks you to install **Command Line Tools** (a free tool from Apple), click
-     **Install**, wait until it is done, and then click **Try Again** in the installer window.
-5. When you see **Completing the Might and Magic IX Native Setup Wizard**, click **Finish**. The game
-   starts (if the box **Launch MM9 Native** is ticked).
+<p align="center"><img src="docs/img/installer-welcome.png" width="460" alt="Welcome window"></p>
+
+**2. Notice.** Read it, click **I accept the terms of this notice**, then **Next >**.
+
+<p align="center"><img src="docs/img/installer-license.png" width="460" alt="Notice window"></p>
+
+**3. Pick your game file.** Click **Browse…** and choose the `setup_might_and_magic_9_…exe` file from your
+**Downloads** folder. (Shortcut: you can also drag the file onto the window.) Then click **Install**.
+
+<p align="center"><img src="docs/img/installer-select.png" width="460" alt="Select your game window"></p>
+
+**4. Wait.** A green bar shows the progress. This takes about 3 minutes on a fast Mac and up to 25
+minutes on an older one. **Keep the window open and do not close the lid.** You can tick **Show details**
+if you are curious.
+
+<p align="center"><img src="docs/img/installer-install.png" width="460" alt="Installing window"></p>
+
+If a message asks you to install **Command Line Tools** (a free tool from Apple), click **Install**,
+wait until it is done, and then click **Try Again** in the installer window.
+
+**5. Done.** When you see **Completing the Might and Magic IX Native Setup Wizard**, click **Finish**.
+The game starts if the box **Launch MM9 Native** is ticked.
+
+<p align="center"><img src="docs/img/installer-done.png" width="460" alt="Finished window"></p>
+
+If something goes wrong, you see this window instead. Read the message in the box, fix it, and click
+**Try Again** (see the table below):
+
+<p align="center"><img src="docs/img/installer-failed.png" width="460" alt="Setup failed window"></p>
 
 ### Step 5: Play
 

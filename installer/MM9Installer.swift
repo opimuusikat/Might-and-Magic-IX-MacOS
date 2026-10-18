@@ -28,7 +28,19 @@ final class Installer: ObservableObject {
     private var errorLines: [String] = []
     private var capturing = false
 
-    init() { refresh() }
+    init() {
+        refresh()
+        // Screenshots for the README: MM9I_PAGE=install|done|failed shows that page with sample values (no build runs).
+        switch ProcessInfo.processInfo.environment["MM9I_PAGE"] {
+        case "install":
+            phase = .running; step = 7; stepTitle = "Analysing the code with Ghidra (5 modules, 3 at a time; the longest step)"
+            started = Date().addingTimeInterval(-420)
+            tail = ["[7/13] Analysing the code with Ghidra (5 modules, 3 at a time; the longest step)", "lithtech.exe  import+analysis 112s", "d3d.ren       import+analysis  38s", "cshell.dll    import+analysis  71s"]
+        case "done": phase = .done
+        case "failed": phase = .failed("Not enough free disk space: the build needs about 4 GB free on the disk that holds /Users/you/Library/Application Support/MM9 Native.")
+        default: break
+        }
+    }
 
     func refresh() {
         let fm = FileManager.default
@@ -351,7 +363,7 @@ enum Page { case welcome, license, select, install }
 struct ContentView: View {
     @StateObject var inst = Installer()
     @State private var page: Page = {
-        switch ProcessInfo.processInfo.environment["MM9I_PAGE"] { case "license": return .license; case "select": return .select; case "install": return .install; default: return .welcome }
+        switch ProcessInfo.processInfo.environment["MM9I_PAGE"] { case "license": return .license; case "select": return .select; case "install", "done", "failed": return .install; default: return .welcome }
     }()
     @State private var accepted = false
     @State private var useExisting = false
@@ -527,7 +539,7 @@ struct ContentView: View {
 
     var finishDone: some View {
         HStack(spacing: 0) {
-            Banner(dawn: true, gameIcon: NSWorkspace.shared.icon(forFile: appPath))
+            Banner(dawn: true, gameIcon: FileManager.default.fileExists(atPath: appPath) ? NSWorkspace.shared.icon(forFile: appPath) : nil)
             VStack(alignment: .leading, spacing: 12) {
                 Text("Completing the Might and Magic IX Native Setup Wizard").font(tahoma(14, bold: true))
                 Text("MM9 Native is now in the Applications folder in your home folder (~/Applications).").font(tahoma())
