@@ -159,7 +159,7 @@ void input_mouse_button(int b, int down) {
 // M1_TURN_KEY=<DIK> (key goes down at frame M1_TURN_FRAME, default 300) is kept for the gate tests.
 // M1_SCRIPT_MS: same syntax, times in ms since the first presented frame; extra command p = dump the back
 // buffer at the next flip as m1_t<ms>.png; s,<what>,<value> changes an image setting at runtime (what: 1 scale (0 auto),
-// 2 MSAA, 3 aniso, 4 trilinear, 5 texture replace, 6 texture dump; M1_NO_PERSIST=1 keeps it out of the defaults);
+// 2 MSAA, 3 aniso, 4 trilinear, 5 texture replace, 6 texture dump, 7 generated mipmaps, 8 alpha to coverage; M1_NO_PERSIST=1 keeps it out of the defaults);
 // o toggles the settings overlay, and while it is open scripted k/r keys go to it (Up 200, Down 208, Left 203, Right 205, Esc 1, Return 28). Each entry fires once, at the first poll at or after its time.
 static void test_hooks_ms(void) {
     extern uint64_t host_frames(void);

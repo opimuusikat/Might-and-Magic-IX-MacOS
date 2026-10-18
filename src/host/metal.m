@@ -25,6 +25,12 @@
 //        Left/Right change (live, saved to the defaults), Esc/Return close. While open, keys and the mouse do not
 //        reach the game. M1_SCRIPT_MS command `o` toggles it; scripted k (key down) then drives it.
 //        M1_NO_PERSIST=1 keeps setting changes out of the defaults (tests).
+//      M1_GENMIPS=1 (key GenMipmaps, live: settings code 7, overlay row "Generated mipmaps"): textures the game uploads without
+//        mips get a mipmapped RGBA8 variant, used by 3D draws only (Z test on, linear min filter). Opaque: GPU mip generation;
+//        with alpha: CPU box filter that keeps the share of texels >= 0.5 alpha per level. Colour-keyed and replaced textures
+//        are left alone. Point mip filtering as the game asks, linear with Trilinear. M1_TRACE_GM=1 prints binding statistics.
+//      M1_A2C=1 (key AlphaToCoverage, live: code 8, overlay row "Alpha to coverage"): with MSAA, alpha-tested unblended draws
+//        use alpha-to-coverage with a sharpened alpha around the test reference (a ref of 0 is treated as 0.5).
 // Image quality (each also a defaults key in local.mm9-native; the env var wins, then the key, then the default):
 //      M1_SCALE=1..4|auto (key RenderScale, 0 = auto): internal render scale. Back buffer, depth and drawable
 //        are W*S x H*S; vertex coordinates stay 800x600 (the `size` uniform), so 3D and 2D scale together. The game
@@ -69,9 +75,9 @@ static id<MTLBuffer> ring[3];
 static uint32_t ring_i, ring_off;
 static id<MTLFunction> vfn, ffn;
 static MTLVertexDescriptor *vdesc;
-static id<MTLRenderPipelineState> pso[512];
+static id<MTLRenderPipelineState> pso[1024];
 static id<MTLDepthStencilState> dss[64];
-static id<MTLSamplerState> samp[4096];
+static id<MTLSamplerState> samp[8192];
 static NSMutableArray *texs;
 static NSMutableDictionary *ktex;           // root surface index -> keyed BGRA8 variant (nil entry: rebuild)
 static id<MTLTexture> white;
@@ -79,6 +85,7 @@ static pthread_mutex_t lk;
 static int pending_clear = 3; static uint32_t clear_color; static float clear_z = 1.0f;
 static uint64_t frames;
 static int ready;
+static int GENM, A2C;                                // generated mipmaps, alpha to coverage (live settings)
 static int SC = 1, MS = 1, ANI = 1, TRI = 0;    // render scale, MSAA samples, anisotropy, trilinear (fixed per run)
 static int SCREQ;                                  // render scale as set (0 = auto)
 static uint32_t BW, BH;                            // internal back buffer size = W*SC x H*SC
@@ -99,6 +106,7 @@ typedef struct {
     int atest, afunc; float aref; int spec;
     int fog, fogmode; float fogstart, fogend;
     float fogcolor[4]; float tfactor[4];
+    int a2c, pa, pb, pc;                    // a2c: alpha-to-coverage variant (sharpened alpha instead of the hard alpha-test discard)
     int tex0, tex1, tci1, ckey;             // ckey: bit 0/1 = stage 0/1 samples a colour-keyed texture (alpha 0 = key)
 } FU;
 
@@ -112,7 +120,7 @@ static const char *msl =
 "  float x = (in.p.x + 0.5) / size.x * 2.0 - 1.0, y = 1.0 - (in.p.y + 0.5) / size.y * 2.0;\n"
 "  o.pos = float4(x * w, y * w, in.p.z * w, w); o.d = in.d; o.s = in.s; o.t0 = in.t0; o.t1 = in.t1; o.w = w; return o; }\n"
 "struct FU { int4 c0, a0, c1, a1; int atest, afunc; float aref; int spec; int fog, fogmode; float fogstart, fogend;\n"
-"  float4 fogcolor; float4 tfactor; int tex0, tex1, tci1, ckey; };\n"
+"  float4 fogcolor; float4 tfactor; int a2c, pa, pb, pc; int tex0, tex1, tci1, ckey; };\n"
 "static float4 arg(int a, float4 dif, float4 cur, float4 tex, float4 tf, float4 spc) {\n"
 "  int s = a & 15; float4 v = s == 0 ? dif : s == 1 ? cur : s == 2 ? tex : s == 3 ? tf : spc;\n"
 "  if (a & 16) v = 1.0 - v; if (a & 32) v = v.aaaa; return v; }\n"
@@ -141,7 +149,11 @@ static const char *msl =
 "  if (u.spec) cur.rgb = saturate(cur.rgb + spc.rgb);\n"
 "  if (u.fog) { float f = spc.a; if (u.fogmode == 3) f = saturate((u.fogend - in.w) / max(u.fogend - u.fogstart, 1e-6));\n"
 "    cur.rgb = mix(u.fogcolor.rgb, cur.rgb, f); }\n"
-"  if (u.atest) { float a = round(cur.a * 255.0), r = u.aref; bool pass;\n"
+"  if (u.atest && u.a2c && (u.afunc == 5 || u.afunc == 7)) {\n"
+"    float r = u.aref > 0.5 ? u.aref / 255.0 : 0.5;   // ref 0 (the game's usual a > 0): treat as the 1-bit-alpha midpoint\n"
+"    cur.a = saturate((cur.a - r) / max(fwidth(cur.a), 1e-4) + 0.5);\n"
+"    if (cur.a <= 0.0) discard_fragment();\n"
+"  } else if (u.atest) { float a = round(cur.a * 255.0), r = u.aref; bool pass;\n"
 "    switch (u.afunc) { case 1: pass = false; break; case 2: pass = a < r; break; case 3: pass = a == r; break; case 4: pass = a <= r; break;\n"
 "    case 5: pass = a > r; break; case 6: pass = a != r; break; case 7: pass = a >= r; break; default: pass = true; }\n"
 "    if (!pass) discard_fragment(); }\n"
@@ -204,6 +216,12 @@ static int setting_int(const char *env, CFStringRef key, int def) {
     Boolean valid = false;
     CFIndex v = CFPreferencesGetAppIntegerValue(key, PREF_DOMAIN, &valid);
     return valid ? (int)v : def;
+}
+static int setting_bool(const char *env, CFStringRef key) {
+    const char *e = getenv(env);
+    if (e && *e) return atoi(e) != 0;
+    Boolean valid = false, on = CFPreferencesGetAppBooleanValue(key, PREF_DOMAIN, &valid);
+    return valid && on;
 }
 static int want_fullscreen(void) {
     const char *e = getenv("M1_FULLSCREEN");
@@ -274,6 +292,7 @@ void gpu_init(uint32_t w, uint32_t h, int rt) {
         MS = resolve_msaa(setting_int("M1_MSAA", CFSTR("MSAA"), 1));
         ANI = setting_int("M1_ANISO", CFSTR("Anisotropy"), 1); ANI = ANI < 1 ? 1 : ANI > 16 ? 16 : ANI;
         TRI = setting_int("M1_TRILINEAR", CFSTR("Trilinear"), 0) != 0;
+        GENM = setting_bool("M1_GENMIPS", CFSTR("GenMipmaps")); A2C = setting_bool("M1_A2C", CFSTR("AlphaToCoverage"));
         fprintf(stderr, "[metal] render scale %d, MSAA %d, aniso %d, trilinear %d\n", SC, MS, ANI, TRI);
         MTLRenderPipelineDescriptor *dd = [MTLRenderPipelineDescriptor new];
         dd.vertexFunction = [lib newFunctionWithName:@"dvs"]; dd.fragmentFunction = [lib newFunctionWithName:@"dfs"];
@@ -415,17 +434,21 @@ static MTLBlendFactor bf(uint32_t b, int alpha) {
     default: return MTLBlendFactorOne;
     }
 }
+// Alpha to coverage applies to alpha-tested, unblended draws when multisampling.
+static int a2c_active(void) { return A2C && MS > 1 && dev.rs[15] && !dev.rs[27]; }
 static id<MTLRenderPipelineState> get_pso(void) {
     uint32_t en = dev.rs[27] ? 1 : 0, src = dev.rs[19] & 15, dst = dev.rs[20] & 15;
     if (dev.rs[19] == 12) { src = 5; dst = 6; }                  // BOTHSRCALPHA
     if (dev.rs[19] == 13) { src = 6; dst = 5; }                  // BOTHINVSRCALPHA
     uint32_t key = en ? (1 | src << 1 | dst << 5) : 0;
+    int a2c = a2c_active(); if (a2c) key |= 1u << 9;
     if (pso[key]) return pso[key];
     MTLRenderPipelineDescriptor *d = [MTLRenderPipelineDescriptor new];
     d.vertexFunction = vfn; d.fragmentFunction = ffn; d.vertexDescriptor = vdesc;
     d.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
     d.depthAttachmentPixelFormat = MTLPixelFormatDepth32Float;
     d.rasterSampleCount = (NSUInteger)MS;
+    if (a2c) d.alphaToCoverageEnabled = YES;
     if (en) {
         d.colorAttachments[0].blendingEnabled = YES;
         d.colorAttachments[0].sourceRGBBlendFactor = bf(src, 0); d.colorAttachments[0].destinationRGBBlendFactor = bf(dst, 0);
@@ -455,12 +478,13 @@ static MTLSamplerAddressMode am(uint32_t a) {
     switch (a) { case 2: return MTLSamplerAddressModeMirrorRepeat; case 3: return MTLSamplerAddressModeClampToEdge;
     case 4: return MTLSamplerAddressModeClampToBorderColor; default: return MTLSamplerAddressModeRepeat; }
 }
-static id<MTLSamplerState> get_samp(int st, int mipmapped) {
+static id<MTLSamplerState> get_samp(int st, int mipmapped, int gen) {
     uint32_t *t = dev.tss[st];
     uint32_t mag = t[16] >= 2 ? 1 : 0, min = t[17] >= 2 ? 1 : 0, mip = mipmapped ? (t[18] == 3 ? 2 : t[18] == 2 ? 1 : 0) : 0;
     uint32_t aniso = (t[16] == 5 || t[17] == 3) ? 1 : 0;
-    if (mipmapped && min && TRI) mip = 2;                         // fixed per run: not part of the key
-    uint32_t key = mag | min << 1 | mip << 2 | (t[13] & 3) << 4 | (t[14] & 3) << 6 | aniso << 8 | (t[13] == 4) << 9 | (t[14] == 4) << 10 | (mipmapped ? 1u : 0u) << 11;
+    if (gen) mip = (t[18] == 3 || TRI) ? 2 : 1;                   // generated mips: the game asked for none/point, so point between levels (linear with Trilinear)
+    else if (mipmapped && min && TRI) mip = 2;                    // TRI is applied by flushing samp[] when it changes
+    uint32_t key = mag | min << 1 | mip << 2 | (t[13] & 3) << 4 | (t[14] & 3) << 6 | aniso << 8 | (t[13] == 4) << 9 | (t[14] == 4) << 10 | (mipmapped ? 1u : 0u) << 11 | (gen ? 1u : 0u) << 12;
     if (samp[key]) return samp[key];
     MTLSamplerDescriptor *d = [MTLSamplerDescriptor new];
     d.magFilter = mag ? MTLSamplerMinMagFilterLinear : MTLSamplerMinMagFilterNearest;
@@ -506,11 +530,120 @@ static int chain(int root, int *lv, int max) {
     return n;
 }
 id<MTLTexture> texpack_texture(uint64_t hash, id<MTLDevice> dev, id<MTLCommandQueue> cq, int noalpha);
+static void gm_touch(int root);
+static void gm_reset(int i);
 static NSMutableDictionary *rtex, *rhash;   // root surface index -> bound replacement texture / its content hash (texpack)
 static void rep_unbind(int root) {
     NSNumber *k = @(root), *h = rhash[k];
     if (h) { texpack_release(h.unsignedLongLongValue); [rhash removeObjectForKey:k]; }
     [rtex removeObjectForKey:k];
+}
+// ---- generated mipmaps (setting GenMipmaps) ---------------------------------------------------------------
+// Textures the game uploads without a mip chain get a lazily built mipmapped RGBA8 variant, used only by 3D draws
+// (Z test on) with a linear min filter. Opaque textures: GPU mip generation. Textures with alpha: CPU box filter with the
+// alpha scaled per level so the share of texels >= 0.5 stays that of level 0 (alpha-tested edges do not vanish).
+// The cache is per root surface slot; gm_touch notes a re-upload (content is re-hashed before the variant is reused),
+// gm_reset clears the slot (surface freed: the slot may be reused).
+typedef struct { uint64_t hash; uint32_t gen, seen_gen, builds; uint8_t skip, has; } GMeta;
+static GMeta *gmeta; static int gm_n;
+static NSMutableDictionary *gmtex;
+static uint64_t gm_count, gm_bytes, gm_cpu, gm_rebuilds;
+static GMeta *gm_meta(int root) {
+    if (root >= gm_n) { int nn = root + 256; gmeta = realloc(gmeta, sizeof(GMeta) * nn); memset(gmeta + gm_n, 0, sizeof(GMeta) * (nn - gm_n)); gm_n = nn; }
+    return &gmeta[root];
+}
+static void gm_touch(int root) { if (GENM) gm_meta(root)->gen++; }
+static void gm_reset(int i) { if (i < gm_n) memset(&gmeta[i], 0, sizeof(GMeta)); [gmtex removeObjectForKey:@(i)]; }
+static void gm_summary(void) { fprintf(stderr, "[metal] genmips: %llu textures given mips (%llu by CPU alpha-coverage filter, %llu rebuilds), %.1f MB extra\n", (unsigned long long)gm_count, (unsigned long long)gm_cpu, (unsigned long long)gm_rebuilds, gm_bytes / 1048576.0); }
+static id<MTLTexture> gm_build(int root, uint64_t hash) {
+    Surf *s = &sf[root];
+    uint32_t w = SDESC(s, 12), h = SDESC(s, 8);
+    if (!w || !h || w > 4096 || h > 4096) return nil;
+    uint32_t *px = malloc((size_t)w * h * 4);
+    if (!px) return nil;
+    if (texpack_decode0(s, px) < 0) { free(px); return nil; }
+    int hasa = 0; for (size_t i = 0; i < (size_t)w * h; i++) if ((px[i] >> 24) < 255) { hasa = 1; break; }
+    int n = 1; for (uint32_t m = MAX(w, h); m > 1; m >>= 1) n++;
+    MTLTextureDescriptor *d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm width:w height:h mipmapped:YES];
+    d.mipmapLevelCount = (NSUInteger)n; d.storageMode = MTLStorageModeShared;
+    d.usage = MTLTextureUsageShaderRead | MTLTextureUsageRenderTarget;
+    id<MTLTexture> t = [mdev newTextureWithDescriptor:d];
+    if (!t) { free(px); return nil; }
+    [t replaceRegion:MTLRegionMake2D(0, 0, w, h) mipmapLevel:0 withBytes:px bytesPerRow:(NSUInteger)w * 4];
+    uint64_t bytes = (uint64_t)w * h * 4;
+    if (!hasa) {
+        id<MTLCommandBuffer> cb = [queue commandBuffer];
+        id<MTLBlitCommandEncoder> b = [cb blitCommandEncoder]; [b generateMipmapsForTexture:t]; [b endEncoding];
+        [cb commit]; [cb waitUntilCompleted];
+        for (int l = 1; l < n; l++) bytes += (uint64_t)MAX(1u, w >> l) * MAX(1u, h >> l) * 4;
+    } else {
+        gm_cpu++;
+        size_t c0 = 0; for (size_t i = 0; i < (size_t)w * h; i++) if ((px[i] >> 24) >= 128) c0++;
+        double target = (double)c0 / ((double)w * h);
+        uint32_t pw = w, ph = h; uint32_t *prev = px;
+        for (int l = 1; l < n; l++) {
+            uint32_t lw = MAX(1u, pw >> 1), lh = MAX(1u, ph >> 1);
+            uint32_t *cur = malloc((size_t)lw * lh * 4);
+            if (!cur) break;
+            for (uint32_t y = 0; y < lh; y++) for (uint32_t x = 0; x < lw; x++) {
+                uint32_t x1 = MIN(2 * x + 1, pw - 1), y1 = MIN(2 * y + 1, ph - 1);
+                uint32_t q[4] = {prev[2 * y * pw + 2 * x], prev[2 * y * pw + x1], prev[y1 * pw + 2 * x], prev[y1 * pw + x1]};
+                uint32_t sa = 0, sr = 0, sg = 0, sb = 0, ar = 0, ag = 0, ab = 0;
+                for (int k = 0; k < 4; k++) {
+                    uint32_t a = q[k] >> 24, r = q[k] & 255, g = q[k] >> 8 & 255, bl = q[k] >> 16 & 255;
+                    sa += a; sr += r * a; sg += g * a; sb += bl * a; ar += r; ag += g; ab += bl;
+                }
+                uint32_t r, g, bl;
+                if (sa) { r = (sr + sa / 2) / sa; g = (sg + sa / 2) / sa; bl = (sb + sa / 2) / sa; } else { r = ar / 4; g = ag / 4; bl = ab / 4; }
+                cur[y * lw + x] = r | g << 8 | bl << 16 | (sa / 4) << 24;
+            }
+            if (target > 0 && target < 1) {                 // alpha-coverage preservation: binary search the alpha scale
+                double lo = 0.25, hi = 16, sc = 1;
+                for (int it = 0; it < 18; it++) {
+                    sc = (lo + hi) / 2; size_t c = 0;
+                    for (size_t i = 0; i < (size_t)lw * lh; i++) if ((double)(cur[i] >> 24) * sc >= 127.5) c++;
+                    if ((double)c / ((double)lw * lh) < target) lo = sc; else hi = sc;
+                }
+                for (size_t i = 0; i < (size_t)lw * lh; i++) { double a = (double)(cur[i] >> 24) * sc; cur[i] = (cur[i] & 0xFFFFFF) | (uint32_t)(a > 255 ? 255 : a) << 24; }
+            }
+            [t replaceRegion:MTLRegionMake2D(0, 0, lw, lh) mipmapLevel:(NSUInteger)l withBytes:cur bytesPerRow:(NSUInteger)lw * 4];
+            bytes += (uint64_t)lw * lh * 4;
+            if (prev != px) free(prev);
+            prev = cur; pw = lw; ph = lh;
+        }
+        if (prev != px) free(prev);
+    }
+    free(px);
+    static int reg; if (!reg) { reg = 1; atexit(gm_summary); }
+    gm_count++; gm_bytes += bytes;
+    if (getenv("M1_TRACE_GM")) fprintf(stderr, "[gm] build root %d %ux%u fmt %s mips %d %s caps %08x\n", root, w, h, SDESC(s, 76) & 4 ? "DXT" : SDESC(s, 84) == 32 ? "32bit" : "16bit", n, hasa ? "alpha(CPU)" : "opaque(GPU)", SDESC(s, 104));
+    gm_meta(root)->hash = hash;
+    return t;
+}
+// The mipmapped variant for the texture bound to a stage, or nil (then the caller keeps the original).
+static id<MTLTexture> gm_variant(uint32_t obj, id<MTLTexture> base) {
+    if (!obj || base.mipmapLevelCount > 1) return nil;
+    uint32_t idx = G32(obj + 8);
+    if (idx >= (uint32_t)nsf) return nil;
+    int root = surf_root((int)idx);
+    Surf *s = &sf[root];
+    if (!s->alive || !s->mem || (SDESC(s, 4) & 0x10000) || (rtex && rtex[@(root)])) return nil;     // keyed (2D sprites) and replaced textures stay as they are
+    GMeta *m = gm_meta(root);
+    if (m->skip) return nil;
+    if (!gmtex) gmtex = [NSMutableDictionary dictionary];
+    id<MTLTexture> t = gmtex[@(root)];
+    if (t && m->seen_gen == m->gen) return t;
+    uint64_t hash = texpack_hash_any(s);
+    if (!hash) return nil;
+    m->seen_gen = m->gen;
+    if (t && m->hash == hash) return t;                        // unlocked but unchanged
+    if (m->has && ++m->builds > 6) { m->skip = 1; [gmtex removeObjectForKey:@(root)]; return nil; }   // changes constantly: not worth mips
+    if (m->has) gm_rebuilds++;
+    t = gm_build(root, hash);
+    m = gm_meta(root); m->has = 1;
+    if (!t) { m->skip = 1; return nil; }
+    gmtex[@(root)] = t;
+    return t;
 }
 static id<MTLTexture> tex_of(uint32_t obj) {
     if (!obj) return nil;
@@ -521,6 +654,7 @@ static id<MTLTexture> tex_of(uint32_t obj) {
     if (!s->alive || !s->mem) return nil;
     if (s->gpu && !s->dirty) return texs[s->gpu - 1];
     [ktex removeObjectForKey:@(root)];
+    gm_touch(root);
     Fmt f = fmt_of(s);
     if (f.pf == MTLPixelFormatInvalid) {
         static int warned; if (warned++ < 5) fprintf(stderr, "[metal] unsupported texture format flags %#x bits %u R %#x\n", SDESC(s, 76), SDESC(s, 84), SDESC(s, 88));
@@ -567,6 +701,7 @@ void gpu_surface_free(int i) {
     if (rb_last_s == i) rb_last_s = -1;          // the slot may be reused
     texpack_forget(i);
     rep_unbind(i);
+    gm_reset(i);
     if (sf[i].gpu) { texs[sf[i].gpu - 1] = white; }
     [ktex removeObjectForKey:@(i)];
     UNLOCK
@@ -608,6 +743,17 @@ static int trace_filt(void) {
     static int v = -1; if (v < 0) { v = getenv("M1_TRACE_FILT") != NULL; if (v) atexit(trace_filt_dump); }
     return v;
 }
+static struct { uint64_t nat, b[2][2][2], mipf[8], atest, atest_blend, atest_z, aref[256], afunc[8]; } gmt;
+static void trace_gm_dump(void) {
+    fprintf(stderr, "[gm] stage bindings by Z-enable / linear-min / base-mipmapped: ");
+    for (int z = 0; z < 2; z++) for (int l = 0; l < 2; l++) for (int m = 0; m < 2; m++) fprintf(stderr, "[Z%d lin%d mip%d]=%llu ", z, l, m, (unsigned long long)gmt.b[z][l][m]);
+    fprintf(stderr, "\n[gm] mip filter (tss18) values:"); for (int i = 0; i < 8; i++) if (gmt.mipf[i]) fprintf(stderr, " %d:%llu", i, (unsigned long long)gmt.mipf[i]);
+    fprintf(stderr, "\n[gm] alpha-tested draws %llu (blended %llu, with Z %llu); funcs:", (unsigned long long)gmt.atest, (unsigned long long)gmt.atest_blend, (unsigned long long)gmt.atest_z);
+    for (int i = 0; i < 8; i++) if (gmt.afunc[i]) fprintf(stderr, " %d:%llu", i, (unsigned long long)gmt.afunc[i]);
+    fprintf(stderr, "\n[gm] alpha refs:"); for (int i = 0; i < 256; i++) if (gmt.aref[i]) fprintf(stderr, " %d:%llu", i, (unsigned long long)gmt.aref[i]);
+    fprintf(stderr, "\n");
+}
+static int trace_gm(void) { static int v = -1; if (v < 0) { v = getenv("M1_TRACE_GM") != NULL; if (v) atexit(trace_gm_dump); } return v; }
 static void set_fu(void) {
     FU u; memset(&u, 0, sizeof u);
     uint32_t *t0 = dev.tss[0], *t1 = dev.tss[1];
@@ -627,6 +773,23 @@ static void set_fu(void) {
     id<MTLTexture> x0 = u.c0[0] != 1 ? tex_of(dev.tex[0]) : nil;
     id<MTLTexture> x1 = (u.c0[0] != 1 && u.c1[0] != 1) ? tex_of(dev.tex[1]) : nil;
     u.tex0 = x0 != nil; u.tex1 = x1 != nil;
+    u.a2c = a2c_active();
+    if (trace_gm()) {
+        for (int st = 0; st < 2; st++) { id<MTLTexture> x = st ? x1 : x0; if (!x) continue;
+            gmt.b[dev.rs[7] != 0][dev.tss[st][17] >= 2][x.mipmapLevelCount > 1]++; gmt.mipf[dev.tss[st][18] & 7]++; }
+        if (dev.rs[15] && !dev.rs[27] && x0 && gmt.nat < 12) {   // which textures are drawn alpha-tested without blending
+            uint32_t ix = dev.tex[0] ? G32(dev.tex[0] + 8) : 0xFFFFFFFF; static uint32_t seenr[64]; static int ns; int dup = 0;
+            for (int i = 0; i < ns; i++) if (seenr[i] == ix) dup = 1;
+            if (!dup && ix < (uint32_t)nsf && ns < 64) { seenr[ns++] = ix; gmt.nat++; fprintf(stderr, "[gm] atest-unblended texture slot %u %ux%u flags %#x bits %u caps %#x z %u\n", ix, SDESC(&sf[ix], 12), SDESC(&sf[ix], 8), SDESC(&sf[ix], 76), SDESC(&sf[ix], 84), SDESC(&sf[ix], 104), dev.rs[7]); }
+        }
+        if (dev.rs[15]) { gmt.atest++; if (dev.rs[27]) gmt.atest_blend++; gmt.aref[dev.rs[24] & 255]++; gmt.afunc[dev.rs[25] & 7]++; if (dev.rs[7]) gmt.atest_z++; }
+    }
+    int g0 = 0, g1 = 0;
+    if (GENM && dev.rs[7]) {                                           // 3D draws only (Z test on)
+        uint32_t k0 = dev.rs[41] && !ck_off();
+        if (x0 && dev.tss[0][17] >= 2 && !(k0 && keyed_of(dev.tex[0], 2))) { id<MTLTexture> v = gm_variant(dev.tex[0], x0); if (v) { x0 = v; g0 = 1; } }
+        if (x1 && dev.tss[1][17] >= 2 && !(k0 && keyed_of(dev.tex[1], 2))) { id<MTLTexture> v = gm_variant(dev.tex[1], x1); if (v) { x1 = v; g1 = 1; } }
+    }
     if (dev.rs[41] && !ck_off()) {
         id<MTLTexture> k0 = x0 ? keyed_of(dev.tex[0], 0) : nil, k1 = x1 ? keyed_of(dev.tex[1], 0) : nil;
         if (k0) { x0 = k0; u.ckey |= 1; }
@@ -641,7 +804,7 @@ static void set_fu(void) {
         filt.bound[mm]++; filt.combo[t[16] & 7][t[17] & 7][t[18] & 7][mm]++;
         filt.maxmip = MAX(filt.maxmip, (uint64_t)x.mipmapLevelCount);
     }
-    id<MTLSamplerState> s0 = get_samp(0, x0 && x0.mipmapLevelCount > 1), s1 = get_samp(1, x1 && x1.mipmapLevelCount > 1);
+    id<MTLSamplerState> s0 = get_samp(0, x0 && x0.mipmapLevelCount > 1, g0), s1 = get_samp(1, x1 && x1.mipmapLevelCount > 1, g1);
     if (ec.s0 != s0) { [enc setFragmentSamplerState:s0 atIndex:0]; ec.s0 = s0; }
     if (ec.s1 != s1) { [enc setFragmentSamplerState:s1 atIndex:1]; ec.s1 = s1; }
     if (!ec.fu_valid || memcmp(&ec.fu, &u, sizeof u)) { [enc setFragmentBytes:&u length:sizeof u atIndex:0]; ec.fu = u; ec.fu_valid = 1; }
@@ -925,7 +1088,7 @@ static void dump_png(const char *kind, uint64_t frame) {
 // gpu_settings_* store a request under LOCK; present() applies it after the frame is committed (no encoder or command
 // buffer open). Scale/MSAA change recreates the render targets and flushes the pipeline cache (the back buffer content
 // is lost for one frame); aniso/trilinear flush the sampler cache; texture replace/dump re-resolve every texture.
-static struct { int has, scale, msaa, aniso, tri, rep, dump; } req;
+static struct { int has, scale, msaa, aniso, tri, rep, dump, gm, a2c; } req;
 static void persist_int(CFStringRef key, int v) {
     if (getenv("M1_NO_PERSIST")) return;
     CFNumberRef n = CFNumberCreate(NULL, kCFNumberIntType, &v);
@@ -939,12 +1102,12 @@ static void persist_bool(CFStringRef key, int v) {
 }
 static void req_fill(void) {      // start a pending request from the current values
     if (req.has) return;
-    req.has = 1; req.scale = SCREQ; req.msaa = MS; req.aniso = ANI; req.tri = TRI; req.rep = texpack_replace_on(); req.dump = texpack_dump_on();
+    req.has = 1; req.scale = SCREQ; req.msaa = MS; req.aniso = ANI; req.tri = TRI; req.rep = texpack_replace_on(); req.dump = texpack_dump_on(); req.gm = GENM; req.a2c = A2C;
 }
 void gpu_settings_request(int scale, int msaa, int aniso, int tri, int texreplace, int texdump) {
     if (!gpu_on()) return;
     LOCK
-    req.has = 1; req.scale = scale; req.msaa = msaa; req.aniso = aniso; req.tri = tri; req.rep = texreplace; req.dump = texdump;
+    req_fill(); req.scale = scale; req.msaa = msaa; req.aniso = aniso; req.tri = tri; req.rep = texreplace; req.dump = texdump;
     UNLOCK
 }
 void gpu_settings_set_one(int what, int value) {
@@ -952,7 +1115,8 @@ void gpu_settings_set_one(int what, int value) {
     LOCK
     req_fill();
     switch (what) { case 1: req.scale = value; break; case 2: req.msaa = value; break; case 3: req.aniso = value; break;
-    case 4: req.tri = value; break; case 5: req.rep = value; break; case 6: req.dump = value; break; }
+    case 4: req.tri = value; break; case 5: req.rep = value; break; case 6: req.dump = value; break;
+    case 7: req.gm = value; break; case 8: req.a2c = value; break; }
     UNLOCK
 }
 void gpu_settings_get(int *scale, int *msaa, int *aniso, int *tri, int *texreplace, int *texdump, int *scale_effective) {
@@ -963,6 +1127,7 @@ void gpu_settings_get(int *scale, int *msaa, int *aniso, int *tri, int *texrepla
     if (texreplace) *texreplace = texpack_replace_on(); if (texdump) *texdump = texpack_dump_on();
     UNLOCK
 }
+void gpu_settings_get2(int *genmips, int *a2c) { if (genmips) *genmips = GENM; if (a2c) *a2c = A2C; }
 void host_maxfps_set(int fps) { persist_int(CFSTR("MaxFPS"), fps < 0 ? 0 : fps); }
 static void apply_settings(void) {
     if (!req.has) return;
@@ -972,14 +1137,16 @@ static void apply_settings(void) {
     int nani = req.aniso < 1 ? 1 : req.aniso > 16 ? 16 : req.aniso, ntri = req.tri != 0, nrep = req.rep != 0, ndump = req.dump != 0;
     int ch_t = nsc != SC || nms != MS, ch_s = nani != ANI || ntri != TRI;
     int ch_r = nrep != (texpack_replace_on() != 0), ch_d = ndump != (texpack_dump_on() != 0);
-    int ch_req = req.scale != SCREQ;
-    if (!ch_t && !ch_s && !ch_r && !ch_d && !ch_req) return;
+    int ch_req = req.scale != SCREQ, ngm = req.gm != 0, na2c = req.a2c != 0, ch_g = ngm != GENM, ch_a = na2c != A2C;
+    if (!ch_t && !ch_s && !ch_r && !ch_d && !ch_req && !ch_g && !ch_a) return;
+    if (ch_g) { GENM = ngm; persist_bool(CFSTR("GenMipmaps"), ngm); if (!ngm) { [gmtex removeAllObjects]; for (int i = 0; i < gm_n; i++) { gmeta[i].has = gmeta[i].skip = 0; gmeta[i].builds = 0; } } }
+    if (ch_a) { A2C = na2c; persist_bool(CFSTR("AlphaToCoverage"), na2c); }
     if (ch_req) { SCREQ = req.scale; persist_int(CFSTR("RenderScale"), SCREQ); }
     if (nms != MS) persist_int(CFSTR("MSAA"), nms);
     if (nani != ANI) persist_int(CFSTR("Anisotropy"), nani);
     if (ntri != TRI) persist_int(CFSTR("Trilinear"), ntri);
-    if (ch_t) { SC = nsc; MS = nms; make_targets(); for (int i = 0; i < 512; i++) pso[i] = nil; }
-    if (ch_s) { ANI = nani; TRI = ntri; for (int i = 0; i < 4096; i++) samp[i] = nil; }
+    if (ch_t) { SC = nsc; MS = nms; make_targets(); for (int i = 0; i < 1024; i++) pso[i] = nil; }
+    if (ch_s) { ANI = nani; TRI = ntri; for (int i = 0; i < 8192; i++) samp[i] = nil; }
     if (ch_r || ch_d) {
         for (NSNumber *k in [rhash allKeys]) rep_unbind(k.intValue);      // before replace goes off: release needs it on
         if (ch_r) { texpack_set_replace(nrep); persist_bool(CFSTR("TextureReplace"), nrep); }
@@ -987,7 +1154,7 @@ static void apply_settings(void) {
         [ktex removeAllObjects];
         for (int i = 0; i < nsf; i++) if (sf[i].alive && sf[i].gpu && sf[i].owner < 0) sf[i].dirty = 1;   // re-hash / re-upload on next bind
     }
-    fprintf(stderr, "[metal] settings applied: scale %d (%ux%u), MSAA %d, aniso %d, tri %d, replace %d, dump %d\n", SC, BW, BH, MS, ANI, TRI, texpack_replace_on() != 0, texpack_dump_on() != 0);
+    fprintf(stderr, "[metal] settings applied: scale %d (%ux%u), MSAA %d, aniso %d, tri %d, replace %d, dump %d, genmips %d, a2c %d\n", SC, BW, BH, MS, ANI, TRI, texpack_replace_on() != 0, texpack_dump_on() != 0, GENM, A2C);
 }
 int gpu_msaa_ok(int n) { return n <= 1 || (mdev && [mdev supportsTextureSampleCount:(NSUInteger)n]); }
 // Settings overlay: a second pass over the presented image (or over a dump copy), never into the back buffer.

@@ -8,7 +8,8 @@ runs exactly as before. The menu frame is byte-identical to the build before the
 
 **In the game's own menu:** Options → **Video Options** now has a second column with **HD Textures**,
 **Sharp Textures** (anisotropic 16x), **Smooth Mipmaps** (trilinear), **Resolution** (1x/2x/3x/4x/Auto),
-**Anti-aliasing** (Off/2x/4x/8x) and **Frame Rate** (60/120, next start). Click a row to change it, then
+**Anti-aliasing** (Off/2x/4x/8x), **Frame Rate** (60/120, next start), **Generated Mipmaps** and
+**Alpha to Coverage**. Click a row to change it, then
 **Apply** to use it, or **Cancel** to throw the change away. **Restore Default** resets these rows too.
 
 How it works: the host patches three slots of that screen's vtable (destructor, command, build). It does
@@ -105,6 +106,24 @@ texture folders are `…/MM9 Native/game/HDTextures/{dump,replace}`.
 - **Texture filtering:** in bootcamp, 54 % of texture bindings are mipmapped with linear min/mag filtering
   and *point* mip filtering. These are the bindings that anisotropy and trilinear filtering affect. UI
   sprites are point-sampled and non-mipmapped, so they are untouched.
+
+## 2b. Generated mipmaps and alpha to coverage (off by default)
+
+- **Generated Mipmaps** (`GenMipmaps` / `M1_GENMIPS`): 3D textures that the game uploads without a mip
+  chain get one. In bootcamp, about a quarter of all texture bindings are such textures.
+  - **Only 3D draws are affected.** Draws with the Z test off (UI, sprites) are never linear-filtered
+    unmipped textures, so the Z test cleanly separates 2D from 3D and the UI stays pixel-exact.
+  - **How the mips are made:** opaque textures use GPU mip generation on RGBA8. Alpha textures use a CPU
+    filter that keeps alpha coverage at 0.5, because the game's alpha test is always greater than 0.
+  - **Cost:** 0.1–0.3 MB per area.
+  - **Visible effect:** small. The game's ground and wall textures already have mips; the unmipped ones
+    are a few 64×64 16-bit textures per area.
+- **Alpha to Coverage** (`AlphaToCoverage` / `M1_A2C`): with MSAA on, alpha-tested draws that are not
+  blended get antialiased edges.
+  - **Where it acts:** bootcamp has no such draws. Yorwick has two 256×256 foliage textures. Most of the
+    game's foliage is alpha-blended, so the effect is confined to a few leaf edges.
+- **fps:** at scale 4 + MSAA 4 there is no measurable cost (335.7 fps with both off, 335.0 with both on,
+  uncapped).
 
 ## 3. HD textures
 

@@ -66,6 +66,9 @@ void gpu_settings_set_one(int what, int value);   // 1 scale, 2 msaa, 3 aniso, 4
 void gpu_settings_get(int *scale, int *msaa, int *aniso, int *tri, int *texreplace, int *texdump, int *scale_effective);
 int  host_maxfps_setting(void);                   // -1 unset, 0 uncapped
 void host_maxfps_set(int fps);                    // persisted; applies after restart
+int  texpack_decode0(const Surf *s, uint32_t *out);        // level 0 -> RGBA8 straight alpha, format code or -1
+uint64_t texpack_hash_any(const Surf *s);
+void gpu_settings_get2(int *genmips, int *a2c);            // generated mipmaps / alpha to coverage (set via gpu_settings_set_one 7 / 8)
 // settings overlay (overlay.m)
 int  overlay_is_open(void);
 int  overlay_version(void);
