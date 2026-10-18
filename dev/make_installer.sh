@@ -36,7 +36,7 @@ P
 # universal, so that on an Intel Mac the window opens and the builder explains that Apple Silicon is needed
 SWT="$(mktemp -d)"
 for arch in arm64 x86_64; do
-  swiftc -swift-version 5 -O -parse-as-library -target "$arch-apple-macos13.0" "$N/installer/MM9Installer.swift" -o "$SWT/MM9Installer-$arch"
+  swiftc -swift-version 5 -O -parse-as-library -target "$arch-apple-macos13.0" "$N/installer/MM9Installer.swift" "$N/installer/XPKit.swift" -o "$SWT/MM9Installer-$arch"
 done
 lipo -create "$SWT"/MM9Installer-* -output "$APP/Contents/MacOS/MM9Installer"; rm -rf "$SWT"
 # app icon: the logo on a rounded tile, rendered by the app itself, then made into an .icns

@@ -47,6 +47,14 @@ BUILD IT
 (Instead of steps 2 and 3, you can paste this in Terminal: bash ~/Downloads/MM9-Native-Builder/src/build.sh)
 
 
+UPDATING
+--------
+The MM9 Native Updater (MM9-Native-Updater.dmg, from the Releases page) checks the MM9 Native you have,
+shows what is out of date and why, and rebuilds it with its own, newer builder. Your game copy, saves and
+settings stay; the saves are copied to ~/Library/Application Support/MM9 Native/backups first, and your
+old app stays in place if the update fails.
+
+
 PLAYING
 -------
 - Double-click "MM9 Native" (drag it to the Dock if you like). Cmd+Esc frees the mouse,

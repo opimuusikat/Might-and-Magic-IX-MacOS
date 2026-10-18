@@ -124,6 +124,22 @@ your Dock to start it quickly next time.
 > **Do not share the finished game with anyone.** It contains the game's own code, which belongs to its
 > owner. A friend who wants it should follow these same steps with their own GOG copy.
 
+### How to update
+
+If a newer version of this project comes out, you do not have to start over. The **updater** looks at what
+you have and brings it up to date. Your game copy, saved games and settings stay.
+
+1. Open the [**Releases** page](https://github.com/opimuusikat/Might-and-Magic-IX-MacOS/releases/latest) and
+   download **`MM9-Native-Updater.dmg`**.
+2. Open it and start **MM9 Native Updater** the same way as the installer (Step 2 and Step 3 above; macOS is
+   cautious the first time).
+3. Click **Next >**. The updater shows what it found: your MM9 Native, which version built it, the game
+   copy and your saves, the tools, and your Mac. It also says what will be updated and why.
+4. Click **Next >** again, leave the boxes as they are, and click **Update**. This takes a few minutes, up to
+   25 on an older Mac. Keep the window open.
+5. Click **Finish**. Before it changes anything, the updater copies your saved games to
+   `~/Library/Application Support/MM9 Native/backups`. If the update fails, your old MM9 Native is left as it was.
+
 ### Something went wrong?
 
 | What you see | What to do |

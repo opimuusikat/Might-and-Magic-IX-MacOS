@@ -76,6 +76,94 @@ if [ "${1:-}" = "--ghidra-one" ]; then
 fi
 
 # ---------------------------------------------------------------------------------------------
+sha() { /usr/bin/shasum -a 256 "$1" 2>/dev/null | cut -d' ' -f1; }
+# SHA-256 that identifies this builder (every file under src/, sorted); the same for the copy inside an app bundle.
+source_hash() {
+  ( cd "$SRC" && /usr/bin/find . -type f ! -name .DS_Store ! -name '._*' ! -path '*/__pycache__/*' | sed 's|^\./||' | LC_ALL=C sort |
+    while IFS= read -r f; do printf '%s  %s\n' "$(sha "$f")" "$f"; done ) | /usr/bin/shasum -a 256 | cut -d' ' -f1
+}
+if [ "${1:-}" = "--source-hash" ]; then source_hash; exit 0; fi
+
+# ---------------------------------------------------------------------------------------------
+# --status: what is on this Mac, as key=value lines (read-only: no log, no dialogs, nothing created). The updater app reads it.
+if [ "${1:-}" = "--status" ]; then
+  kv() { printf '%s=%s\n' "$1" "$2"; }
+  bsrc="$(source_hash)"; kv bundled_version "$BUILDER_VERSION"; kv bundled_source "$bsrc"
+  arm=0; [ "$(/usr/sbin/sysctl -n hw.optional.arm64 2>/dev/null)" = 1 ] && arm=1
+  clt=0; /usr/bin/xcode-select -p > /dev/null 2>&1 && /usr/bin/xcrun --find clang > /dev/null 2>&1 && clt=1
+  kv mac_arm64 $arm; kv macos "$(/usr/bin/sw_vers -productVersion 2>/dev/null)"; kv clt $clt
+  app=""; for d in "$APPDIR" /Applications; do [ -z "$app" ] && [ -d "$d/$APPNAME" ] && app="$d/$APPNAME"; done
+  kv app_path "$app"
+  appstate=missing; asrc=""; aver=""; aarm=0; asmoke=""; asup="$SUPPORT"
+  if [ -n "$app" ]; then
+    mk="$app/$MARKER"
+    if [ ! -f "$mk" ]; then appstate=foreign; else
+      appstate=ok
+      aver="$(sed -n 's/^builder-version: *//p' "$mk" | head -1)"; [ -n "$aver" ] || aver="$(head -1 "$mk" | sed -n 's/^MM9 Native Builder *//p')"
+      asrc="$(sed -n 's/^builder-source: *//p' "$mk" | head -1)"
+      kv app_state ok; kv app_version "$aver"; kv app_source "$asrc"
+      kv app_built "$(sed -n 's/^built //p' "$mk" | head -1)"
+      asmoke="$(sed -n 's/^smoke test: //p' "$mk" | head -1)"; kv app_smoke "$asmoke"
+      kv app_ghidra "$(sed -n 's/^Ghidra output: //p' "$mk" | head -1)"
+      kv app_table "$(sed -n 's/^function table ([^)]*): //p' "$mk" | head -1)"
+      /usr/bin/file "$app/Contents/MacOS/MM9NativeGame" 2>/dev/null | grep -q 'Mach-O 64-bit executable arm64' && aarm=1
+      kv app_arm64 $aarm
+      l="$(grep -m1 '^SUPPORT=' "$app/Contents/MacOS/MM9Native" 2>/dev/null)"   # written with printf %q
+      case "$l" in *'`'*|*'$('*|*'${'*) l="" ;; esac   # a path never needs command substitution; refuse it
+      case "$l" in SUPPORT=*) x=""; eval "x=${l#SUPPORT=}" 2>/dev/null; [ -n "$x" ] && asup="$x" ;; esac
+    fi
+  fi
+  [ "$appstate" = ok ] || kv app_state $appstate
+  kv app_support "$asup"
+  g="$asup/game"; gs=missing
+  if [ -f "$g/lithtech.exe" ]; then
+    gs=ok; for f in $GAME_FILES; do [ "$(sha "$g/$f")" = "$(sha_game "$f")" ] || gs=wrong; done
+  fi
+  kv game_state $gs
+  ns=0; mb=0
+  if [ -d "$g/SaveGames" ]; then
+    ns="$(find "$g/SaveGames" -type f 2>/dev/null | wc -l | tr -d ' ')"; mb=$(( ($(du -sk "$g/SaveGames" 2>/dev/null | cut -f1) + 512) / 1024 ))
+  fi
+  kv saves "$ns"; kv saves_mb "$mb"
+  fd="$asup"; while [ ! -d "$fd" ] && [ "$fd" != / ]; do fd="$(dirname "$fd")"; done
+  kv free_gb "$(df -k "$fd" 2>/dev/null | awk 'NR == 2 { print int($4 / 1048576) }')"
+  tstate() {   # <name> <manifest sha>
+    if [ "$(cat "$CACHE/$1/.ok" 2>/dev/null)" = "$2" ]; then echo ok; elif [ -e "$CACHE/$1" ]; then echo update; else echo missing; fi
+  }
+  tg=$(tstate ghidra "$GHIDRA_SHA"); tj=$(tstate jdk "$JDK_SHA"); tu=$(tstate unicorn "$UNICORN_SHA")
+  kv tools_ghidra "$tg"; kv tools_jdk "$tj"; kv tools_unicorn "$tu"
+  FF="$asup/tools/ffmpeg"; ff=missing
+  if [ -x "$FF" ]; then if [ "$(cat "$FF.zip.sha" 2>/dev/null)" = "$FFMPEG_SHA" ]; then ff=ok; else ff=update; fi; fi
+  kv ffmpeg $ff
+  wa=0; [ -d "/Applications/Might and Magic IX.app" ] && wa=1; wg=0; [ -f "$WINE_GAME/lithtech.exe" ] && wg=1
+  kv wine_app $wa; kv wine_game $wg
+  blocker=""
+  if [ "$arm" != 1 ]; then blocker="This Mac does not have Apple Silicon (M1 or later). The native version runs only on Apple Silicon."
+  elif [ "$appstate" = missing ]; then blocker="MM9 Native is not installed on this Mac. Use the MM9 Native Installer."
+  elif [ "$appstate" = foreign ]; then blocker="The app at $app was not made by the MM9 Native Builder, so it is left alone. Use the MM9 Native Installer."
+  elif [ "$gs" != ok ]; then blocker="The game copy in $g is $([ "$gs" = missing ] && echo missing || echo "not the expected GOG 1.3 version"). Use the MM9 Native Installer."
+  fi
+  if [ -n "$blocker" ]; then kv update_needed no; kv app_update no; kv blocker "$blocker"; exit 0; fi
+  reasons=(); au=no
+  if [ -z "$asrc" ]; then au=yes; reasons+=("Your MM9 Native was built by an older builder that did not record its version details.")
+  elif [ "$asrc" != "$bsrc" ]; then au=yes; reasons+=("Your MM9 Native was built by a different builder than this updater's (version $aver, this one is $BUILDER_VERSION).")
+  elif [ "$aver" != "$BUILDER_VERSION" ]; then au=yes; reasons+=("Your MM9 Native was built by builder $aver; this updater has $BUILDER_VERSION.")
+  fi
+  if [ "$aarm" != 1 ]; then au=yes; reasons+=("The game program inside MM9 Native is not an Apple Silicon program.")
+  fi
+  case "$asmoke" in passed*) ;; *) au=yes; reasons+=("The last start-up test of MM9 Native did not pass.") ;; esac
+  need=no
+  [ "$au" = yes ] && need=yes
+  for t in "ghidra:$tg" "jdk:$tj" "unicorn:$tu"; do
+    [ "${t#*:}" = update ] && { need=yes; reasons+=("The build tool ${t%%:*} in the tool folder is not the version this builder needs.") ; }
+  done
+  [ "$ff" = update ] && { need=yes; reasons+=("The movie tool ffmpeg is not the version this builder expects."); }
+  kv update_needed $need; kv app_update $au
+  for r in "${reasons[@]+"${reasons[@]}"}"; do kv reason "$r"; done
+  exit 0
+fi
+
+# ---------------------------------------------------------------------------------------------
 NSTEPS=13; STEPNO=0; STEP=""; STEP_T0=0; T_START=$(date +%s)
 mkdir -p "$LOGDIR" || { echo "Cannot create $LOGDIR"; exit 1; }
 [ -f "$LOG" ] && mv -f "$LOG" "$LOG.old"
@@ -113,7 +201,6 @@ Details are in $LOG"
   exit 1
 }
 logrun() { "$@" >> "$LOG" 2>&1; }
-sha() { /usr/bin/shasum -a 256 "$1" 2>/dev/null | cut -d' ' -f1; }
 trap 'printf "\nStopped.\n"; exit 130' INT TERM
 
 echo "MM9 Native Builder $BUILDER_VERSION"
@@ -141,6 +228,12 @@ if [ -z "${MM9N_CACHE:-}" ] && [ -d "$OLD_CACHE" ]; then
   rm -rf "$OLD_CACHE" && say "removed the old tool folder $OLD_CACHE (Ghidra cannot start from there)"
 fi
 mkdir -p "$WORK" || fail "Cannot create $WORK"
+SRC_HASH="$(source_hash)"
+if [ -f "$WORK/.source" ] && [ "$(cat "$WORK/.source")" != "$SRC_HASH" ]; then   # leftovers of an unfinished run by another builder
+  rm -rf "$WORK"; mkdir -p "$WORK" || fail "Cannot create $WORK"
+  say "removed the unfinished files of an earlier build: they came from a different builder version"
+fi
+echo "$SRC_HASH" > "$WORK/.source"
 printf 'int main(void) { return 0; }\n' > "$WORK/cc-test.c"
 logrun /usr/bin/xcrun clang -arch arm64 "$WORK/cc-test.c" -o "$WORK/cc-test" \
   || fail "The C compiler does not work. If the log mentions a licence, run: sudo xcodebuild -license accept"
@@ -548,7 +641,9 @@ fi
 step "Installing the app and cleaning up"
 { echo "MM9 Native Builder $BUILDER_VERSION"; echo "built $(date)"; echo "macOS $osv; $clangv"
   echo "Ghidra 12.1.4, Temurin $JDK_TOP, Unicorn 2.1.4"; echo "Ghidra output: $GHIDRA_MATCH"
-  echo "function table ($nfn functions): $TABLE_MATCH"; echo "smoke test: $SMOKE"; echo "game copy: $GAME"; } > "$A/$MARKER"
+  echo "function table ($nfn functions): $TABLE_MATCH"; echo "smoke test: $SMOKE"; echo "game copy: $GAME"
+  echo "builder-version: $BUILDER_VERSION"; echo "builder-source: $SRC_HASH"; echo "built-unix: $(date +%s)"
+  if [ -x "$SUPPORT/tools/ffmpeg" ] && [ "$(cat "$SUPPORT/tools/ffmpeg.zip.sha" 2>/dev/null)" = "$FFMPEG_SHA" ]; then echo "ffmpeg: $FFMPEG_SHA"; else echo "ffmpeg: none"; fi; } > "$A/$MARKER"
 logrun /usr/bin/codesign --force --sign - "$A" || fail "Signing the app failed."
 logrun /usr/bin/codesign --verify --deep --strict "$A" || fail "The app's signature does not verify."
 mkdir -p "$APPDIR" || fail "Cannot create $APPDIR"
