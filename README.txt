@@ -78,7 +78,12 @@ If the game itself misbehaves, send ~/Library/Application Support/MM9 Native/log
 
 REMOVING IT
 -----------
-Delete "MM9 Native.app", the folder ~/Library/Application Support/MM9 Native (this deletes your
+The easy way: the MM9 Native Uninstaller (MM9-Native-Uninstaller.dmg, from the Releases page). Tick what
+to remove and click Uninstall. Everything goes to the Trash, so you can put it back until you empty it.
+Your saved games stay unless you tick "Also remove my saved games". The Wine version of the game is only
+removed if you tick it too.
+
+By hand: delete "MM9 Native.app", the folder ~/Library/Application Support/MM9 Native (this deletes your
 native saves!) and the tool cache ~/Library/Application Support/MM9 Native Builder (1.2 GB). You can delete the
 tool cache at any time; the builder downloads the tools again if you rebuild.
 

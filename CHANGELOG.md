@@ -10,3 +10,4 @@ To ship a fix: change the code, add a line here, bump `BUILDER_VERSION`, run `de
 ## 1.1
 
 - Fixes go here, one per line. Replace this line with what changed in 1.1.
+- New: MM9 Native Uninstaller (red window). Moves MM9 Native, its tools and settings to the Trash; the Wine version and saved games only if ticked.

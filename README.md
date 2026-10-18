@@ -154,6 +154,9 @@ on your Mac and moves it to the **Trash**, so you can still put things back unti
 the Wine version of the game too, if you tick it. Your saved games stay unless you tick them too.
 
 <p align="center"><img src="docs/img/uninstaller-components.png" width="460" alt="MM9 Native Uninstaller: choose what to remove"></p>
+<p align="center"><em>The uninstaller's main page. Each line shows how much space it takes. The Wine version and your
+saved games are only removed if you tick them, and the total at the bottom is what you get back once you empty
+the Trash.</em></p>
 
 1. On the [Releases page](https://github.com/opimuusikat/Might-and-Magic-IX-MacOS/releases/latest), download
    **`MM9-Native-Uninstaller.dmg`** and open it.
