@@ -1,0 +1,18 @@
+#!/bin/bash
+# Refuses commits that could contain game-derived material (after Fallout-NV-MacOS's guard).
+# Enable with: git config core.hooksPath .githooks
+bad=0
+while IFS= read -r -d '' f; do
+  [ -f "$f" ] || continue
+  case "$f" in
+    *.exe|*.EXE|*.dll|*.DLL|*.ren|*.lto|*.fxd|*.m3d|*.M3D|*.asi|*.ASI|*.rez|*.REZ|*.bik|*.mp3|*.wav|*.pdb|*.gpr|*.jsonl|*.regs.json|*.dylib|*.o|*.a)
+      echo "blocked (type): $f"; bad=1; continue;;
+    gen*/*|*/gen*/*|build-work/*|*/build-work/*|*.app/*)
+      echo "blocked (generated dir): $f"; bad=1; continue;;
+  esac
+  if [ "$(head -c 2 "$f")" = "MZ" ]; then echo "blocked (PE binary): $f"; bad=1; continue; fi
+  if [ "$(wc -c < "$f")" -gt 1048576 ]; then echo "blocked (>1 MB): $f"; bad=1; continue; fi
+  # emitted C and merged tables carry these markers
+  if grep -qE '^void g_[0-9a-f]+\(CPU \*c\)|rt_fn_addr\[\] = \{0x' "$f"; then echo "blocked (generated C): $f"; bad=1; fi
+done < <(git diff --cached --name-only -z --diff-filter=ACM)
+[ $bad -eq 0 ] || { echo "pre-commit: game-derived material refused (see README 'Bring your own game')"; exit 1; }

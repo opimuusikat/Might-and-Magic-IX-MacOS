@@ -1,0 +1,21 @@
+MM9 Native Builder: third-party code and tools
+
+Included in this package
+- Fallout-NV-MacOS (github.com/thetheoryofR/Fallout-NV-MacOS @ ff8e0d79), MIT licence,
+  (c) 2026 thetheoryofR; see Fallout-NV-MacOS-LICENSE.txt. Copied: recomp/rt.h and the Ghidra
+  scripts DumpPcode.java, FixEntries.java, FixNoReturn.java, ResolveJumpTables.java. Derived (changed):
+  src/recomp/emit_rc.py and flaglive.py (x87 rounding-control fix, FFREE), and several files in
+  src/host (each says so in its first lines).
+
+Downloaded by the builder on your Mac (not included; each checked against a fixed SHA-256)
+- Ghidra 12.1.4 (National Security Agency), Apache License 2.0. Runs on your Mac to analyse the game.
+- Eclipse Temurin JDK 21.0.12.1 (Adoptium), GPLv2 with the Classpath Exception. Runs Ghidra.
+- Unicorn 2.1.4 (the PyPI wheel's static library), GPLv2. Linked into the app the builder makes on
+  your Mac, as the fallback interpreter for code the analysis missed. That app is never shared.
+
+Optional, installed by you
+- FFmpeg (for example: brew install ffmpeg). The app runs the ffmpeg command-line tool to play the
+  game's Bink movies; nothing from FFmpeg is linked into the app.
+
+Not included, and never shared: anything from Might and Magic IX. The builder reads your own copy
+of the game and makes everything game-derived on your Mac.

@@ -1,0 +1,8 @@
+{
+  "game": "Might and Magic IX",
+  "system": "PC (Windows)",
+  "type": "recomp",
+  "status": "playable",
+  "targets": ["macOS"],
+  "toolchain": ["Ghidra", "Unicorn"]
+}
