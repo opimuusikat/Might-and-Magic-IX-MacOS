@@ -165,6 +165,11 @@ What works:
   native fullscreen, settings that persist.
 - **Sound and movies:** music and sound effects, and the intro movies with sound (if `ffmpeg` is
   installed).
+- **Graphics options:** Options → Video Options has extra rows: Resolution (up to 4x internal
+  resolution), Anti-aliasing, Sharp Textures, Smooth Mipmaps, HD Textures and Frame Rate (60/120).
+  Cmd+, opens the same settings as a panel over the game. You can also make your own AI-upscaled HD
+  texture pack from your copy of the game; it is for your own use only. See
+  [docs/ENHANCEMENTS.md](docs/ENHANCEMENTS.md).
 - **Speed:** the game holds its 60 fps cap at up to about 2,100 draws per frame. The same game
   under Wine on the same Mac manages about 23 fps. At the first training-area view, the native
   engine needs about 1 ms of main-thread time per frame; Wine needs about 43 ms.
@@ -174,9 +179,6 @@ emulator, 8,774 of 8,816 testable entry points (99.5 %) match the original exact
 
 Not done yet:
 - **Long play sessions:** not tested.
-- **Optional extras** (higher internal resolution, MSAA, better texture filtering, up to 120 fps, HD
-  texture packs) are built in but off by default and only tested offscreen so far; see
-  [docs/ENHANCEMENTS.md](docs/ENHANCEMENTS.md).
 - **Intel Macs:** the builder refuses to run on them. For Intel Macs, use the Wine version of the
   game.
 

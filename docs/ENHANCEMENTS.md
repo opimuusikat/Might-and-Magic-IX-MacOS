@@ -158,8 +158,35 @@ texture folders are `…/MM9 Native/game/HDTextures/{dump,replace}`.
   - **What is already full quality:** DXT textures are copied as they are, and all DTX uploads already
     carry their full mip chain.
   - **Cost:** no measurable fps cost.
-- **Workflow:** play with `TextureDump` on, then run `texlist.py`. Upscale the textures you want and save
-  them under the same name in `replace/`, then switch `TextureReplace` on.
+
+## 3b. Make your own HD texture pack
+
+The pack is made on your Mac from your own copy of the game. It is the game's art, upscaled: keep it for
+yourself and do not share it (the same rule as for the game app itself).
+
+1. **Export all textures** (about 18 s, 149 MB):
+   `python3 dev/rezlist.py "<game folder>/data" --export ~/MM9-HD`
+2. **Get the upscaler:** download Real-ESRGAN (BSD-3) `realesrgan-ncnn-vulkan-20220424-macos.zip` (51.8 MB,
+   SHA-256 `e0ad05580abfeb25f8d8fb55aaf7bedf552c375b5b4d9bd3c8d59764d2cc333a`) from
+   github.com/xinntao/Real-ESRGAN/releases (v0.2.5.0) and unpack it to `~/MM9-HD/tools/realesrgan`.
+3. **Upscale:**
+   `python3 dev/hd_upscale.py --src ~/MM9-HD/source --out ~/MM9-HD/replace --tool ~/MM9-HD/tools/realesrgan`
+   - **What the script does:** it uses a mixed plan: 4× up to 128 px, 2× for 256 px, and larger
+     textures stay unchanged.
+     - **Repeating textures:** they are wrap-padded before upscaling, so they tile without seams.
+     - **Alpha:** it is upscaled separately. Hard alpha (fences, leaves) stays crisp and soft alpha
+       (glows) stays smooth.
+   - **Resumable:** run it again and it skips what is done. `--only <path part>` limits it to some textures.
+   - **Measured on an M4 Pro:** 3,503 textures in 24 minutes, 1.3 GB.
+4. **Install:** copy `~/MM9-HD/replace` to `<game folder>/HDTextures/replace` (`cp -cR` makes an APFS clone that
+   takes no extra space), then turn on **HD Textures** in Options → Video Options.
+   - **Check it worked:** at exit the log says `[texpack] replace: N by path, M by hash`.
+   - **Not happy with a texture:** delete its PNG and the original is used.
+
+**Result:** in the bootcamp view the stone walls, floor and ceiling are clearly sharper. Some textures change
+character: the stained glass, for example, looks smoother and repainted. fps is unchanged at the 60 cap.
+**Older method:** play with `TextureDump` on, then use `texlist.py` and hash-named files. This still works
+for textures that are not DTX files (UI pictures, lightmaps).
 
 ## Numbers (bootcamp spawn view, offscreen, Apple M4 Pro, 20 s windows)
 
@@ -187,24 +214,22 @@ window, `MaxFPS 120` with vsync on a ProMotion display, and the `defaults` keys.
 offscreen and used the env variables.)
 
 Test guide for the owner (about 10 minutes):
-1. Run `defaults write local.mm9-native RenderScale -int 0; defaults write local.mm9-native MSAA -int 4;
-   defaults write local.mm9-native Anisotropy -int 16; defaults write local.mm9-native Trilinear -bool true`.
-   Then start the game.
-   - Main menu: is it sharp, and do the hover highlights sit on the buttons?
-   - Start or load a game. Is the 3D view sharper with smooth edges, and are the portraits, compass and
-     dialog boxes in their usual places? Try fullscreen (Ctrl+Cmd+F) and back.
+1. In Options → Video Options, set Resolution 2x or Auto, Anti-aliasing 4x, Sharp Textures and Smooth
+   Mipmaps on, then click Apply.
+   - Is the 3D view sharper, with smooth edges?
+   - Are the portraits, compass and dialog boxes in their usual places?
+   - Try fullscreen (Ctrl+Cmd+F) and back.
    - Save (F5) and open Load Game: does the save show the right preview picture?
-2. Run `defaults write local.mm9-native MaxFPS -int 120` and restart. Walk around outdoors for a minute.
-   Does it feel smoother than before, without stutter? Does the clock in the top right advance at the
-   normal speed (about 1 game minute per 2 real seconds)?
-3. Optional: run `defaults write local.mm9-native TextureDump -bool true`, play for a few minutes, and
-   check that `HDTextures/dump` fills with PNG files.
-4. Undo everything: `defaults delete local.mm9-native RenderScale` (and the same for `MSAA`,
-   `Anisotropy`, `Trilinear`, `MaxFPS` and `TextureDump`).
+2. Set Frame Rate to 120 and restart. Walk around outdoors for a minute.
+   - Is it smoother, without stutter?
+   - Does the clock advance at the normal speed (about 1 game minute per 2 real seconds)?
+3. With an HD pack installed, turn HD Textures on and off. Visit a few areas and look for wrong colours,
+   missing transparency or seams.
+4. Cmd+, opens the same settings as a panel over the game. Esc closes it.
 
 Further work that is not done:
 - **Wider than 4:3:** the UI is fixed to 800×600, and changing that would mean UI changes.
-- **Mipmaps for non-mipmapped 3D textures:** about 46 % of bindings are non-mipmapped. GPU mip generation
-  is not possible for DXT formats.
-- **Alpha-to-coverage for alpha-tested foliage under MSAA.**
-- **An HD pack:** none is made here. The test replacements were tinted copies.
+- **Generated mipmaps and alpha-to-coverage:** both were built and measured, then left out. The effect
+  was near zero: most game textures already have mips, and most foliage is alpha-blended.
+- **An installer option that makes the HD pack automatically:** planned. The installer would download
+  the pinned upscaler and run steps 1–4 on the user's Mac.
