@@ -25,6 +25,7 @@ final class BuildRunner: ObservableObject {
     private var process: Process?
     private var activity: NSObjectProtocol?
     private var capturing = false
+    private var cancelled = false
 
     /// `env` is the whole environment for the builder; `preface` lines go first into the details.
     func start(builder: String, env: [String: String], preface: [String] = [], reason: String = "Building MM9 Native") {
@@ -79,12 +80,30 @@ final class BuildRunner: ObservableObject {
         if let a = activity { ProcessInfo.processInfo.endActivity(a); activity = nil }
         process = nil
         onFinish?()
-        if code == 0 { phase = .done }
+        let wasCancelled = cancelled; cancelled = false
+        if wasCancelled { phase = .idle }
+        else if code == 0 { phase = .done }
         else if code == 130 || code == 15 { phase = .idle }
         else { phase = .failed(errorLines.isEmpty ? "The build stopped unexpectedly." : errorLines.joined(separator: "\n")) }
     }
 
-    func cancel() { process?.interrupt() }
+    /// Stops the builder and everything it started. SIGINT to bash alone is not enough: bash holds its trap until the
+    /// current foreground step (Ghidra, clang) ends, and closing the window would leave the build running.
+    func cancel() {
+        guard let p = process, p.isRunning else { return }
+        cancelled = true
+        func descendants(_ pid: Int32) -> [Int32] {
+            let q = Process(); q.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep"); q.arguments = ["-P", String(pid)]
+            let out = Pipe(); q.standardOutput = out; q.standardError = FileHandle.nullDevice
+            guard (try? q.run()) != nil else { return [] }
+            let text = String(decoding: out.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self); q.waitUntilExit()
+            let kids = text.split(separator: "\n").compactMap { Int32($0) }
+            return kids + kids.flatMap { descendants($0) }
+        }
+        let tree = descendants(p.processIdentifier)
+        kill(p.processIdentifier, SIGTERM)
+        for pid in tree { kill(pid, SIGTERM) }
+    }
     func showLog() { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: logFile)]) }
     func copyLog() {
         let text = (try? String(contentsOfFile: logFile, encoding: .utf8)) ?? tail.joined(separator: "\n")

@@ -220,7 +220,9 @@ final class UpdaterModel: ObservableObject {
 
     func setStatus(_ s: UStatus) {
         status = s; analysing = false
-        rebuild = s.appUpdate; movies = s["ffmpeg"] != "missing"; backup = true
+        rebuild = s.appUpdate
+        // Any ffmpeg refresh runs the whole builder, so an up-to-date install must not start with it ticked.
+        movies = s["ffmpeg"] == "update" || (s["ffmpeg"] == "ok" && s.appUpdate); backup = true
         chooseDefaultFix()
     }
 

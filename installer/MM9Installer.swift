@@ -108,11 +108,11 @@ struct ContentView: View {
         .overlay(TopRounded().stroke(xpBorder, lineWidth: 1))
         .background(WindowSetup())
         .onReceive(timer) { tick = $0; if page == .components { cltOK = commandLineToolsReady(); freeGB = freeDiskGB() } }
-        .onChange(of: inst.phase) { _ in inst.refresh() }
+        .onChange(of: inst.phase) { ph in inst.refresh(); if ph == .idle && page == .install { page = .components } }   // cancelled
         .onDrop(of: [.fileURL], isTargeted: $targeted) { providers in
-            guard page == .select || page == .welcome || page == .license, let p = providers.first else { return false }
+            guard page == .select, let p = providers.first else { return false }   // not before the notice is accepted
             _ = p.loadObject(ofClass: URL.self) { url, _ in
-                if let u = url { DispatchQueue.main.async { path = u.path; useExisting = false; accepted = true; page = .select } }
+                if let u = url { DispatchQueue.main.async { path = u.path; useExisting = false } }
             }
             return true
         }

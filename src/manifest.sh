@@ -1,7 +1,7 @@
 # MM9 Native Builder: pinned inputs, tools and reference hashes (sourced by build.sh).
 # Hashes only: nothing here is derived from the game's bytes in a way that reveals them.
 
-BUILDER_VERSION=1.2
+BUILDER_VERSION=1.3
 
 # The five code modules of the GOG release (Might and Magic 9: Writ of Fate 1.3, installer
 # setup_might_and_magic_9_writ_of_fate_1.3_(31712).exe), as paths inside the game folder.

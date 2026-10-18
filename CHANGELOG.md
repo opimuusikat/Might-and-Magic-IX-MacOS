@@ -7,6 +7,14 @@ version on its welcome page. Keep each line short and in plain words, one fix pe
 To ship a fix: change the code, add a line here, bump `BUILDER_VERSION`, run `dev/make_updater.sh`
 (and the installer script), then publish a GitHub release with a higher tag.
 
+## 1.3
+
+- Fixed: Cancel in the installer and updater now stops the whole build at once, and closing the window no longer leaves a build running in the background.
+- Fixed: if replacing the app fails, your previous MM9 Native is put back instead of being lost.
+- Fixed: the updater no longer starts a full rebuild just because ffmpeg is installed and everything is up to date.
+- Fixed: the installer no longer gets stuck on the Installing page after Cancel.
+- Fixed: dropping a file on the installer before accepting the notice no longer skips the notice.
+
 ## 1.2
 
 - New: MM9 Native Uninstaller (red window). Moves MM9 Native, its tools and settings to the Trash; your saved games stay unless you tick them.

@@ -734,9 +734,14 @@ mkdir -p "$APPDIR" || fail "Cannot create $APPDIR"
 DEST="$APPDIR/$APPNAME"
 if [ -e "$DEST" ]; then
   [ -f "$DEST/$MARKER" ] || fail "$DEST exists and was not made by this builder. Move it away, or set MM9N_APPDIR to another folder."
-  rm -rf "$DEST"
+  PREV="$APPDIR/.MM9 Native.previous.$$"   # keep the old app until the new one is in place
+  rm -rf "$PREV"; mv "$DEST" "$PREV" || fail "Cannot replace $DEST. The old app was not changed."
 fi
-mv "$A" "$DEST" || fail "Cannot move the app to $APPDIR."
+if ! mv "$A" "$DEST"; then
+  [ -n "${PREV:-}" ] && [ -e "$PREV" ] && mv "$PREV" "$DEST"
+  fail "Cannot move the app to $APPDIR. Your previous app was put back."
+fi
+[ -n "${PREV:-}" ] && rm -rf "$PREV"
 cp "$DEST/$MARKER" "$LOGDIR/build-info.txt"
 if [ "$FAST" != 1 ] && [ "${MM9N_RELINK:-1}" = 1 ]; then   # keep the compiled game code for fast bug-fix rebuilds
   rm -rf "$RELINK.new"; mkdir -p "$RELINK.new"
