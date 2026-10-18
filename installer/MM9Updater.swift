@@ -20,6 +20,41 @@ func releaseNotes() -> [String] {
     return out
 }
 
+/// One in-game bug-fix variant from fixes/index.json (via `build.sh --fixes`).
+struct UFix: Identifiable { let id: String; let date: String; let stable: Bool; let title: String; var notes: [String] }
+
+func parseFixes(_ text: String) -> (state: String, fixes: [UFix], recommended: String) {
+    var state = "offline", list: [UFix] = [], rec = ""
+    for line in text.split(separator: "\n", omittingEmptySubsequences: true) {
+        guard let eq = line.firstIndex(of: "=") else { continue }
+        let k = String(line[line.startIndex..<eq]), v = String(line[line.index(after: eq)...])
+        let f = v.components(separatedBy: "\t")
+        switch k {
+        case "fixes_source": state = v
+        case "fix": if f.count >= 4 { list.append(UFix(id: f[0], date: f[1], stable: f[2] == "1", title: f[3], notes: [])) }
+        case "fix_note": if f.count >= 2, let i = list.firstIndex(where: { $0.id == f[0] }) { list[i].notes.append(f[1]) }
+        case "fix_default": rec = v
+        default: break
+        }
+    }
+    return (state, list, rec)
+}
+
+func sampleFixes() -> String {
+    """
+    fixes_source=ok
+    fix=2026-10-20b\t2026-10-20\t0\tSave-game crash on the world map
+    fix_note=2026-10-20b\tFixes a crash when saving on the world map (not tested enough yet).
+    fix=2026-10-20a\t2026-10-20\t1\tMouse wheel and window focus
+    fix_note=2026-10-20a\tMouse wheel scrolls the spell list again.
+    fix_note=2026-10-20a\tAlt-Tab no longer leaves the cursor stuck.
+    fix=2026-10-18\t2026-10-18\t1\tHD textures load from the right folder
+    fix=2026-10-15\t2026-10-15\t1\tVideo options keep their values
+    fix=2026-10-12\t2026-10-12\t1\tSound stutter on Bink movies
+    fix_default=2026-10-20a
+    """
+}
+
 // MARK: - What `build.sh --status` says
 
 struct UStatus {
@@ -151,6 +186,11 @@ final class UpdaterModel: ObservableObject {
     @Published var status: UStatus?
     @Published var analysing = false
     @Published var newer: String?
+    @Published var fixes: [UFix] = []
+    @Published var fixesState = "loading"     // loading, ok, offline
+    @Published var recommendedFix = ""
+    @Published var selectedFix = ""           // "" means no bug-fix variant
+    private var fixChosen = false
     @Published var rebuild = false
     @Published var movies = true
     @Published var backup = true
@@ -162,9 +202,11 @@ final class UpdaterModel: ObservableObject {
         forward = runner.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
         guard let page = sample ?? ProcessInfo.processInfo.environment["MM9U_PAGE"] else { return }
         switch page {
-        case "analysis", "uptodate", "blocked", "components", "install", "done", "failed":
-            setStatus(UStatus(text: sampleStatus(page))); startPage = page == "components" ? .components : (page == "analysis" || page == "uptodate" || page == "blocked") ? .analysis : .install
+        case "analysis", "uptodate", "blocked", "fixes", "components", "install", "done", "failed":
+            setStatus(UStatus(text: sampleStatus(page == "fixes" ? "analysis" : page)))
+            startPage = page == "components" ? .components : page == "fixes" ? .fixes : (page == "analysis" || page == "uptodate" || page == "blocked") ? .analysis : .install
             if page == "analysis" { newer = "1.1" }
+            if page == "fixes" { loadFixes(sample: sampleFixes()) }
             if page == "install" {
                 runner.phase = .running; runner.step = 7; runner.stepTitle = "Analysing the code with Ghidra (5 modules, 3 at a time; the longest step)"
                 runner.started = Date().addingTimeInterval(-420)
@@ -179,6 +221,37 @@ final class UpdaterModel: ObservableObject {
     func setStatus(_ s: UStatus) {
         status = s; analysing = false
         rebuild = s.appUpdate; movies = s["ffmpeg"] != "missing"; backup = true
+        chooseDefaultFix()
+    }
+
+    var installedFix: String { let f = status?["app_fix"] ?? ""; return f == "none" ? "" : f }
+    var installedFixTitle: String { status?["app_fix_title"] ?? "" }
+    /// What the player gets by default: the newest stable variant, or what they already have when none is stable.
+    func chooseDefaultFix() {
+        guard !fixChosen, status != nil, fixesState != "loading" else { return }
+        selectedFix = recommendedFix.isEmpty ? installedFix : recommendedFix
+        rebuild = forced || rebuild
+    }
+    func selectFix(_ id: String) { fixChosen = true; selectedFix = id; rebuild = forced || (status?.appUpdate ?? false) }
+
+    /// Asks `build.sh --fixes` for the last 5 variants (needs the network; silent when offline).
+    func loadFixes(sample: String? = nil) {
+        fixesState = "loading"
+        func finish(_ text: String) {
+            let r = parseFixes(text); fixes = r.fixes; fixesState = r.state == "ok" ? "ok" : "offline"; recommendedFix = r.recommended
+            chooseDefaultFix()
+        }
+        if let t = sample ?? ProcessInfo.processInfo.environment["MM9U_FIXES_FILE"].flatMap({ try? String(contentsOfFile: $0, encoding: .utf8) }) { finish(t); return }
+        guard let res = Bundle.main.resourceURL else { return }
+        let builder = res.appendingPathComponent("builder/src/build.sh").path
+        DispatchQueue.global(qos: .userInitiated).async {
+            var e = ProcessInfo.processInfo.environment; e["MM9N_DIALOGS"] = "0"; e["PATH"] = "/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:/usr/local/bin"
+            let p = Process(); p.executableURL = URL(fileURLWithPath: "/bin/bash"); p.arguments = [builder, "--fixes"]; p.environment = e
+            let out = Pipe(); p.standardOutput = out; p.standardError = FileHandle.nullDevice; p.standardInput = FileHandle.nullDevice
+            var text = ""
+            if (try? p.run()) != nil { text = String(decoding: out.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self); p.waitUntilExit() }
+            DispatchQueue.main.async { finish(text) }
+        }
     }
 
     /// Runs `build.sh --status` (or reads MM9U_STATUS_FILE), then asks GitHub whether a newer updater exists.
@@ -197,6 +270,7 @@ final class UpdaterModel: ObservableObject {
             DispatchQueue.main.async { self.setStatus(UStatus(text: text)) }
         }
         if env["MM9U_PAGE"] == nil { checkGitHub() }
+        if env["MM9U_PAGE"] == nil || env["MM9U_FIXES_FILE"] != nil { loadFixes() }
     }
 
     /// Silent on any error.
@@ -214,8 +288,8 @@ final class UpdaterModel: ObservableObject {
         }.resume()
     }
 
-    var forced: Bool { status?.appUpdate ?? false }
-    var willRun: Bool { rebuild || movies }
+    var forced: Bool { (status?.appUpdate ?? false) || (fixesState != "loading" && selectedFix != installedFix) }
+    var willRun: Bool { forced || rebuild || movies }
 
     /// Backs up the saves (if asked), then runs the bundled builder on the existing game copy.
     func startUpdate() {
@@ -225,6 +299,7 @@ final class UpdaterModel: ObservableObject {
         env["MM9N_DIALOGS"] = "0"; env["PATH"] = "/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:/usr/local/bin"
         env["MM9N_GAME"] = nil; env["MM9N_INSTALLER"] = nil
         env["MM9N_FFMPEG_DOWNLOAD"] = movies ? "1" : "0"
+        env["MM9N_FIX"] = selectedFix.isEmpty ? "none" : selectedFix
         env["MM9N_SUPPORT"] = s["app_support"]; env["MM9N_APPDIR"] = s.appDir
         backupDir = nil
         runner.step = 0; runner.stepTitle = "Starting"; runner.tail = []; runner.started = Date(); runner.phase = .running
@@ -269,7 +344,7 @@ final class UpdaterModel: ObservableObject {
 
 // MARK: - Window
 
-enum UPage { case welcome, analysis, components, install }
+enum UPage { case welcome, analysis, fixes, components, install }
 
 struct UpdaterRoot: View {
     @ObservedObject var m: UpdaterModel
@@ -299,6 +374,7 @@ struct UpdaterRoot: View {
                     switch page {
                     case .welcome: welcome
                     case .analysis: XPWizardPage(title: "Checking Your Installation", subtitle: "Setup is looking at what is on this Mac.") { analysis }
+                    case .fixes: XPWizardPage(title: "Bug-Fix Version", subtitle: "Choose which in-game bug-fix set MM9 Native is built with.") { fixesPage }
                     case .components: XPWizardPage(title: "Select Components", subtitle: "Choose what Setup should update on your Mac.") { components }
                     case .install: installPage
                     }
@@ -355,6 +431,9 @@ struct UpdaterRoot: View {
                         XPLink(url: releasesPage, text: "Open the releases page")
                     }
                 }
+                if m.fixesState == "ok", !m.recommendedFix.isEmpty, m.recommendedFix != m.installedFix {
+                    Text("A newer bug-fix variant is available (\(m.recommendedFix)). Click Next to choose.").font(tahoma())
+                }
                 Spacer(minLength: 0)
             } else {
                 Text("Looking at your MM9 Native, the game copy, the tools and this Mac. This takes a few seconds.").font(tahoma())
@@ -380,6 +459,45 @@ struct UpdaterRoot: View {
             }
         } else {
             Text("MM9 Native is up to date.").font(tahoma(11, bold: true)).foregroundColor(Color(hex: 0x21A121))
+        }
+    }
+
+    func fixLabel(_ f: UFix) -> String {
+        var t = "\(f.date)  \(f.title)"
+        if f.id == m.installedFix { t += "   [installed]" }
+        if f.id == m.recommendedFix { t += "   [recommended]" } else if !f.stable { t += "   [not marked stable yet]" }
+        return t
+    }
+    var fixesPage: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(m.installedFix.isEmpty ? "You have: no bug-fix variant (builder \(bundledVersion) as shipped)." : "You have: \(m.installedFix) \(m.installedFixTitle.isEmpty ? "" : "– " + m.installedFixTitle)")
+                .font(tahoma(11, bold: true)).lineLimit(2)
+            if m.fixesState == "loading" {
+                Text("Looking for bug-fix variants on GitHub…").font(tahoma())
+                XPProgress(fraction: 0, running: true).padding(.top, 4)
+            } else if m.fixesState == "offline" {
+                Text("The list of bug-fix variants could not be loaded (no internet, or GitHub did not answer). You can go on; the app keeps the variant it has, but a rebuild then needs the internet to fetch it again.")
+                    .font(tahoma()).fixedSize(horizontal: false, vertical: true)
+            } else {
+                Text("The last \(m.fixes.count) available. The installer picks the newest one marked stable.").font(tahoma())
+                SunkenBox {
+                    XPScroll { VStack(alignment: .leading, spacing: 5) {
+                        ForEach(m.fixes) { f in XPRadio(title: fixLabel(f), on: m.selectedFix == f.id) { m.selectFix(f.id) } }
+                        XPRadio(title: "No bug-fix variant (builder \(bundledVersion) as shipped)", on: m.selectedFix.isEmpty) { m.selectFix("") }
+                    }.padding(6).frame(maxWidth: .infinity, alignment: .leading) }
+                }.frame(height: 122)
+                if let f = m.fixes.first(where: { $0.id == m.selectedFix }), !f.notes.isEmpty {
+                    VStack(alignment: .leading, spacing: 2) {
+                        ForEach(0..<f.notes.count, id: \.self) { Text("\u{2022} " + f.notes[$0]).font(tahoma()).fixedSize(horizontal: false, vertical: true) }
+                    }
+                }
+                if !(m.fixes.first(where: { $0.id == m.selectedFix })?.stable ?? true) {
+                    Text("This variant is not marked stable yet. It may have new problems.").font(tahoma()).foregroundColor(Color(hex: 0xA05A00))
+                }
+            }
+            Spacer(minLength: 0)
+            Text(m.selectedFix == m.installedFix ? "Nothing changes in the bug fixes." : "Switching variant rebuilds the app (5 to 30 minutes). Your saves stay.")
+                .font(tahoma()).foregroundColor(Color(hex: 0x555555))
         }
     }
 
@@ -433,7 +551,7 @@ struct UpdaterRoot: View {
             Banner(dawn: true, gameIcon: !app.isEmpty && FileManager.default.fileExists(atPath: app) ? NSWorkspace.shared.icon(forFile: app) : nil)
             VStack(alignment: .leading, spacing: 12) {
                 Text("Completing the Might and Magic IX Native Updater").font(tahoma(14, bold: true))
-                Text("MM9 Native was updated to builder \(bundledVersion).").font(tahoma())
+                Text("MM9 Native was updated to builder \(bundledVersion)\(m.selectedFix.isEmpty ? "" : ", bug-fix variant \(m.selectedFix)").").font(tahoma())
                 Text(m.backupDir.map { "Your saved games were backed up first, to \($0)." } ?? "No backup of the saved games was made. They were not touched.").font(tahoma()).foregroundColor(Color(hex: 0x555555))
                 Spacer()
                 XPCheck(title: "Launch MM9 Native", on: $launch)
@@ -481,6 +599,7 @@ struct UpdaterRoot: View {
         switch page {
         case .welcome: return true
         case .analysis: return !m.analysing && (m.status?.ok ?? false) && (m.status?.blocker.isEmpty ?? false)
+        case .fixes: return m.fixesState != "loading"
         case .components: return m.willRun && cltOK && freeGB >= 4 && (m.status?.blocker.isEmpty ?? false)
         case .install: return false
         }
@@ -488,13 +607,14 @@ struct UpdaterRoot: View {
     func next() {
         switch page {
         case .welcome: page = .analysis; m.analyse()
-        case .analysis: page = .components; cltOK = commandLineToolsReady(); freeGB = freeDiskGB()
+        case .analysis: page = .fixes
+        case .fixes: page = .components; cltOK = commandLineToolsReady(); freeGB = freeDiskGB()
         case .components: page = .install; m.startUpdate()
         case .install: break
         }
     }
     func back() {
-        switch page { case .analysis: page = .welcome; case .components: page = .analysis; case .install: page = .components; default: break }
+        switch page { case .analysis: page = .welcome; case .fixes: page = .analysis; case .components: page = .fixes; case .install: page = .components; default: break }
     }
 }
 

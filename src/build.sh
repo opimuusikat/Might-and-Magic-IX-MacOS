@@ -25,6 +25,7 @@
 #   MM9N_KEEP_WORK=1  keep the 1 GB of intermediate files after a successful build
 #   MM9N_JOBS, MM9N_GHIDRA_JOBS, MM9N_GHIDRA_MAXMEM   parallelism and Ghidra's Java heap
 #   MM9N_SKIP_SMOKETEST=1  do not start the game once at the end
+#   MM9N_FIX       in-game bug-fix variant: auto (default; newest stable of the last 5), none, or a variant id
 #   MM9N_FFMPEG_DOWNLOAD=1  also download ffmpeg (28 MB, SHA-256 checked) so the intro movies play
 #
 # MIT licence (see LICENSES/). Parts are derived from Fallout-NV-MacOS (MIT, (c) 2026 thetheoryofR).
@@ -85,6 +86,22 @@ source_hash() {
 if [ "${1:-}" = "--source-hash" ]; then source_hash; exit 0; fi
 
 # ---------------------------------------------------------------------------------------------
+# In-game bug-fix variants live in the repository's fixes/ folder (fixes/index.json plus fixes/<id>/host/...), not in this
+# builder. A variant replaces files of src/host/ at compile time. MM9N_FIX: "auto" (default: the newest variant marked
+# stable among the last 5; none if GitHub cannot be reached), "none", or a variant id. MM9N_FIXES_URL overrides the source.
+FIXES_URL="${MM9N_FIXES_URL:-https://raw.githubusercontent.com/opimuusikat/Might-and-Magic-IX-MacOS/main/fixes}"
+FIXES_TMP=""
+fetch_fix_index() {   # sets FIXES_TMP to a verified-parseable index.json; returns 1 when it cannot be had
+  FIXES_TMP="$(mktemp -d "${TMPDIR:-/tmp}/mm9fix.XXXXXX")" || return 1
+  /usr/bin/curl -fsSL --retry 1 --connect-timeout 8 --max-time 20 -o "$FIXES_TMP/index.json" "$FIXES_URL/index.json" 2>/dev/null || return 1
+  "$PY" -I "$SRC/tools/fixes.py" list "$FIXES_TMP/index.json" "$BUILDER_VERSION" > "$FIXES_TMP/list.txt" 2>/dev/null || return 1
+}
+if [ "${1:-}" = "--fixes" ]; then   # the last 5 variants for this builder, as key=value lines (needs the network)
+  if fetch_fix_index; then printf 'fixes_source=ok\n'; cat "$FIXES_TMP/list.txt"; else printf 'fixes_source=offline\n'; fi
+  rm -rf "$FIXES_TMP"; exit 0
+fi
+
+# ---------------------------------------------------------------------------------------------
 # --status: what is on this Mac, as key=value lines (read-only: no log, no dialogs, nothing created). The updater app reads it.
 if [ "${1:-}" = "--status" ]; then
   kv() { printf '%s=%s\n' "$1" "$2"; }
@@ -103,6 +120,7 @@ if [ "${1:-}" = "--status" ]; then
       asrc="$(sed -n 's/^builder-source: *//p' "$mk" | head -1)"
       kv app_state ok; kv app_version "$aver"; kv app_source "$asrc"
       kv app_built "$(sed -n 's/^built //p' "$mk" | head -1)"
+      kv app_fix "$(sed -n 's/^fix-id: *//p' "$mk" | head -1)"; kv app_fix_title "$(sed -n 's/^fix-title: *//p' "$mk" | head -1)"
       asmoke="$(sed -n 's/^smoke test: //p' "$mk" | head -1)"; kv app_smoke "$asmoke"
       kv app_ghidra "$(sed -n 's/^Ghidra output: //p' "$mk" | head -1)"
       kv app_table "$(sed -n 's/^function table ([^)]*): //p' "$mk" | head -1)"
@@ -253,6 +271,32 @@ mkdir -p "$CACHE" || fail "Cannot create $CACHE"
 [ "$(free_gb "$CACHE")" -ge "$need" ] || fail "Not enough free disk space: the build needs about $need GB free on the disk that holds $CACHE."
 clangv="$(/usr/bin/xcrun clang --version 2>/dev/null | head -1)"
 { echo "macOS $osv, $NCPU cores, $MEM_GB GB"; echo "$clangv"; "$PY" --version 2>&1; } >> "$LOG"
+FIX_ID=""; FIX_TITLE=""; HOSTDIR="$SRC/host"
+want_fix="${MM9N_FIX:-auto}"
+if [ "$want_fix" != none ]; then
+  if fetch_fix_index; then
+    if [ "$want_fix" = auto ]; then want_fix="$(sed -n 's/^fix_default=//p' "$FIXES_TMP/list.txt")"; fi
+    if [ -n "$want_fix" ]; then
+      "$PY" -I "$SRC/tools/fixes.py" files "$FIXES_TMP/index.json" "$want_fix" > "$FIXES_TMP/files.txt" 2>/dev/null \
+        || fail "The bug-fix variant \"$want_fix\" is not in the fix list for builder $BUILDER_VERSION."
+      HOSTDIR="$WORK/host"; rm -rf "$HOSTDIR"; mkdir -p "$HOSTDIR"; cp "$SRC"/host/* "$HOSTDIR/"
+      nf=0
+      while read -r rel want; do
+        [ -n "$rel" ] || continue
+        /usr/bin/curl -fsSL --retry 2 --connect-timeout 15 --max-time 120 -o "$HOSTDIR/$(basename "$rel")" "$FIXES_URL/$want_fix/$rel" \
+          || fail "Downloading $rel of bug-fix variant $want_fix failed."
+        [ "$(sha "$HOSTDIR/$(basename "$rel")")" = "$want" ] || fail "$rel of bug-fix variant $want_fix does not match its checksum, so it was not used."
+        nf=$((nf + 1))
+      done < "$FIXES_TMP/files.txt"
+      FIX_ID="$want_fix"; FIX_TITLE="$("$PY" -I "$SRC/tools/fixes.py" title "$FIXES_TMP/index.json" "$FIX_ID")"
+      say "bug-fix variant $FIX_ID: $FIX_TITLE ($nf files)"
+    else say "no stable bug-fix variant is published for builder $BUILDER_VERSION yet; building without one"
+    fi
+  elif [ "$want_fix" = auto ]; then say "could not reach the bug-fix list; building without a bug-fix variant"
+  else fail "Could not reach the bug-fix list at $FIXES_URL, so variant \"$want_fix\" cannot be downloaded."
+  fi
+  rm -rf "$FIXES_TMP"
+fi
 done_step "macOS $osv, $NCPU cores, $MEM_GB GB memory; $clangv"
 
 # ---------------------------------------------------------------------------------------------
@@ -518,12 +562,12 @@ gens=(); for m in $MODULES; do gens+=("$WORK/gen/${m//./_}"); done
 logrun "$PY" -I "$SRC/tools/merge_tables.py" "$B/table.c" "${gens[@]}" || fail "Merging the function tables failed."
 if [ "$(sha "$B/table.c")" = "$REF_TABLE_SHA" ]; then TABLE_MATCH="identical to the reference build"; else TABLE_MATCH="DIFFERS from the reference build"; fi
 logrun /usr/bin/xcrun clang -arch arm64 -O1 -w -I"$INC" -DRT_FIXED_MEM -c "$B/table.c" -o "$B/table.o" || fail "Compiling the function table failed."
-for f in "$SRC"/host/*.c; do
-  logrun /usr/bin/xcrun clang -arch arm64 -O2 -g -Wall -Wno-unused-function -I"$SRC/host" -I"$INC" -I"$UNICORN/include" \
+for f in "$HOSTDIR"/*.c; do
+  logrun /usr/bin/xcrun clang -arch arm64 -O2 -g -Wall -Wno-unused-function -I"$HOSTDIR" -I"$INC" -I"$UNICORN/include" \
     -c "$f" -o "$B/host/$(basename "$f" .c).o" || fail "Compiling the runtime ($(basename "$f")) failed."
 done
-for f in "$SRC"/host/*.m; do
-  logrun /usr/bin/xcrun clang -arch arm64 -O2 -g -fobjc-arc -Wall -I"$SRC/host" -I"$INC" \
+for f in "$HOSTDIR"/*.m; do
+  logrun /usr/bin/xcrun clang -arch arm64 -O2 -g -fobjc-arc -Wall -I"$HOSTDIR" -I"$INC" \
     -c "$f" -o "$B/host/$(basename "$f" .m).o" || fail "Compiling the runtime ($(basename "$f")) failed."
 done
 find "$WORK/obj" -name '*.o' > "$B/objs.txt"
@@ -643,6 +687,7 @@ step "Installing the app and cleaning up"
   echo "Ghidra 12.1.4, Temurin $JDK_TOP, Unicorn 2.1.4"; echo "Ghidra output: $GHIDRA_MATCH"
   echo "function table ($nfn functions): $TABLE_MATCH"; echo "smoke test: $SMOKE"; echo "game copy: $GAME"
   echo "builder-version: $BUILDER_VERSION"; echo "builder-source: $SRC_HASH"; echo "built-unix: $(date +%s)"
+  echo "fix-id: ${FIX_ID:-none}"; echo "fix-title: ${FIX_TITLE:-}"
   if [ -x "$SUPPORT/tools/ffmpeg" ] && [ "$(cat "$SUPPORT/tools/ffmpeg.zip.sha" 2>/dev/null)" = "$FFMPEG_SHA" ]; then echo "ffmpeg: $FFMPEG_SHA"; else echo "ffmpeg: none"; fi; } > "$A/$MARKER"
 logrun /usr/bin/codesign --force --sign - "$A" || fail "Signing the app failed."
 logrun /usr/bin/codesign --verify --deep --strict "$A" || fail "The app's signature does not verify."
