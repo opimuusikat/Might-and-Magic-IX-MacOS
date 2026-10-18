@@ -243,7 +243,7 @@ struct WindowSetup: NSViewRepresentable {
 
 // MARK: - Original artwork (drawn here; nothing taken from the game)
 
-/// The project logo (Resources/logo.jpg), shown round.
+/// The project logo (Resources/logo.jpg), shown as a rounded square.
 let logoImage: NSImage? = Bundle.main.url(forResource: "logo", withExtension: "jpg").flatMap { NSImage(contentsOf: $0) }
 struct Logo: View {
     let size: CGFloat
@@ -252,7 +252,7 @@ struct Logo: View {
             if let i = logoImage { Image(nsImage: i).resizable().interpolation(.high).scaledToFit() }
             else { Color(hex: 0x1B2A6B) }
         }
-        .frame(width: size, height: size).clipShape(Circle())
+        .frame(width: size, height: size).clipShape(RoundedRectangle(cornerRadius: size * 0.16))
         .shadow(color: .black.opacity(0.6), radius: size * 0.04, y: size * 0.02)
     }
 }
